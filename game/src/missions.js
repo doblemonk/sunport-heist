@@ -205,35 +205,3 @@ export function updateMissions(missions, game, dt) {
     }
   }
 }
-
-export function drawMissionMarker(ctx, missions, game, cam, time) {
-  const marker = missionMarker(missions, game);
-  if (!marker) return;
-  const x = marker.x - cam.x;
-  const y = marker.y - cam.y;
-  const pulse = 1 + Math.sin(time * 4) * 0.12;
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.scale(pulse, pulse);
-  ctx.strokeStyle = '#e8b93c';
-  ctx.lineWidth = 4;
-  ctx.beginPath();
-  ctx.arc(0, 0, 34, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.fillStyle = 'rgba(232,185,60,0.25)';
-  ctx.beginPath();
-  ctx.arc(0, 0, 34, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#e8b93c';
-  ctx.beginPath();
-  ctx.moveTo(0, -52);
-  ctx.lineTo(10, -34);
-  ctx.lineTo(-10, -34);
-  ctx.closePath();
-  ctx.fill();
-  ctx.restore();
-  ctx.fillStyle = '#1f2937';
-  ctx.font = 'bold 13px system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(marker.label, x, y - 58);
-}

@@ -101,7 +101,3 @@ export function updateTraffic(cars, player, world, random, dt) {
     car.y = clamp(car.y, 40, WORLD_H - 40);
   }
 }
-
-export function drawTraffic(ctx, cars, cam, time, drawCar) {
-  for (const car of cars) drawCar(ctx, car, cam, time);
-}

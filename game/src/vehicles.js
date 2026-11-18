@@ -69,53 +69,6 @@ export function randomParkedSpot(random, world) {
   return { x, y: ry + 44, angle: random() < 0.5 ? 0 : Math.PI };
 }
 
-export function drawCar(ctx, car, cam, time) {
-  const x = car.x - cam.x;
-  const y = car.y - cam.y;
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.fillStyle = 'rgba(0,0,0,0.3)';
-  ctx.beginPath();
-  ctx.ellipse(0, 14, 24, 10, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.rotate(car.angle);
-  // Body.
-  ctx.fillStyle = car.wrecked ? '#555c66' : car.color;
-  ctx.beginPath();
-  ctx.roundRect(-26, -13, 52, 26, 7);
-  ctx.fill();
-  ctx.strokeStyle = 'rgba(0,0,0,0.4)';
-  ctx.lineWidth = 2;
-  ctx.stroke();
-  // Cabin and windscreen.
-  ctx.fillStyle = car.kind === KIND_POLICE ? '#e8e4da' : '#1f2937';
-  ctx.beginPath();
-  ctx.roundRect(-8, -11, 18, 22, 4);
-  ctx.fill();
-  ctx.fillStyle = '#9ecfe8';
-  ctx.fillRect(8, -10, 4, 20);
-  // Headlights and tail lights.
-  ctx.fillStyle = '#ffe98a';
-  ctx.fillRect(24, -11, 3, 6);
-  ctx.fillRect(24, 5, 3, 6);
-  ctx.fillStyle = '#d94f3d';
-  ctx.fillRect(-27, -11, 3, 6);
-  ctx.fillRect(-27, 5, 3, 6);
-  if (car.kind === KIND_POLICE) {
-    // Light bar, flashing red and blue.
-    const phase = Math.floor(time * 6) % 2 === 0;
-    ctx.fillStyle = phase ? '#e5484d' : '#3d7bd9';
-    ctx.fillRect(-4, -12, 8, 5);
-    ctx.fillStyle = phase ? '#3d7bd9' : '#e5484d';
-    ctx.fillRect(-4, 7, 8, 5);
-    ctx.fillStyle = '#1f2937';
-    ctx.font = 'bold 9px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('SPPD', 0, 4);
-  }
-  ctx.restore();
-}
-
 export function carLabel(car) {
   if (car.kind === KIND_POLICE) return 'Solmar PD cruiser';
   if (car.kind === KIND_TRAFFIC) return 'traffic car';

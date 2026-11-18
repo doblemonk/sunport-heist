@@ -116,31 +116,3 @@ export function updateCombat(combat, player, peds, police, world, dt, audio) {
 export function dropPickup(combat, x, y, kind, amount) {
   combat.pickups.push({ x, y, kind, amount, taken: false, bob: Math.random() * 6 });
 }
-
-export function drawCombat(ctx, combat, cam, time) {
-  for (const bullet of combat.bullets) {
-    ctx.fillStyle = '#ffe98a';
-    ctx.beginPath();
-    ctx.arc(bullet.x - cam.x, bullet.y - cam.y, 3, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  for (const pickup of combat.pickups) {
-    const x = pickup.x - cam.x;
-    const y = pickup.y - cam.y + Math.sin(time * 4 + pickup.bob) * 2;
-    if (pickup.kind === 'cash') {
-      ctx.fillStyle = '#4fb06a';
-      ctx.fillRect(x - 9, y - 6, 18, 12);
-      ctx.fillStyle = '#e8e4da';
-      ctx.font = 'bold 10px system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('$', x, y + 4);
-    } else {
-      ctx.fillStyle = '#8a5fd0';
-      ctx.fillRect(x - 8, y - 6, 16, 12);
-      ctx.fillStyle = '#e8e4da';
-      ctx.font = 'bold 9px system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('AMMO', x, y + 3);
-    }
-  }
-}

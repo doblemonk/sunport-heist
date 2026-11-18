@@ -129,39 +129,3 @@ function clampTurn(diff, dt) {
   const max = 2.2 * dt;
   return diff > max ? max : diff < -max ? -max : diff;
 }
-
-export function drawPolice(ctx, police, cam, time, drawCar, drawCop) {
-  for (const car of police.copCars) drawCar(ctx, car, cam, time);
-  for (const cop of police.footCops) drawCop(ctx, cop, cam, time);
-}
-
-export function drawFootCop(ctx, cop, cam, time) {
-  const x = cop.x - cam.x;
-  const y = cop.y - cam.y;
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.fillStyle = 'rgba(0,0,0,0.3)';
-  ctx.beginPath();
-  ctx.ellipse(0, 9, 10, 5, 0, 0, Math.PI * 2);
-  ctx.fill();
-  if (cop.down) {
-    ctx.fillStyle = '#1e3a5f';
-    ctx.beginPath();
-    ctx.ellipse(0, 0, 12, 6, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-    return;
-  }
-  const bob = Math.sin(time * 10 + cop.x) * 1.5;
-  ctx.fillStyle = '#1e3a5f';
-  ctx.beginPath();
-  ctx.arc(0, bob, 11, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#e8e4da';
-  ctx.beginPath();
-  ctx.arc(0, bob - 3, 5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#e8b93c';
-  ctx.fillRect(-6, bob - 8, 12, 3);
-  ctx.restore();
-}

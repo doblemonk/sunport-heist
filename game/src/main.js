@@ -1,7 +1,8 @@
-// Sunport Heist — boot, the one loop, the camera, the screens, and the
-// screenshot scenes. Input is read every frame, the city advances in fixed
-// 1/60 s steps, and the canvas paints what is there. The game moves between
-// four screens: title, play, paused and game over.
+// Sunport Heist — boot, the one loop, the screens, and the screenshot
+// scenes. Input is read every frame, the city advances in fixed 1/60 s
+// steps, and Three.js paints the world in 3D from render3d.js while a 2D
+// overlay canvas paints the HUD, minimap and menus on top. The game moves
+// between four screens: title, play, paused and game over.
 //
 // ?shot=start|chase|drive|mission (with &seed=N) stages that scene from the
 // real rules instead of running the loop, paints it twice and sets
@@ -11,16 +12,17 @@ import { createRandom, pick } from './random.js';
 import { createWorld } from './world.js';
 import { ACTION_CONFIRM, ACTION_ENTER_CAR, ACTION_MUTE, ACTION_PAUSE, ACTION_PUNCH, ACTION_SAVE, ACTION_SHOOT, createInput } from './input.js';
 import { createAudio } from './audio.js';
-import { createPlayer, drawPlayer, hurtPlayer, updatePlayerOnFoot } from './player.js';
-import { KIND_PARKED, createCar, drawCar, driveCar, nearestCar, randomParkedSpot } from './vehicles.js';
+import { createPlayer, hurtPlayer, updatePlayerOnFoot } from './player.js';
+import { KIND_PARKED, createCar, driveCar, nearestCar, randomParkedSpot } from './vehicles.js';
 import { createTraffic, updateTraffic } from './traffic.js';
-import { createPedestrians, drawPedestrians, updatePedestrians } from './pedestrians.js';
-import { addWanted, createPolice, drawFootCop, drawPolice, updatePolice } from './police.js';
-import { createCombat, drawCombat, dropPickup, tryPunch, tryShoot, updateCombat } from './combat.js';
-import { MISSIONS, createMissions, currentDef, drawMissionMarker, missionMarker, updateMissions } from './missions.js';
+import { createPedestrians, updatePedestrians } from './pedestrians.js';
+import { addWanted, createPolice, updatePolice } from './police.js';
+import { createCombat, dropPickup, tryPunch, tryShoot, updateCombat } from './combat.js';
+import { MISSIONS, createMissions, currentDef, missionMarker, updateMissions } from './missions.js';
 import { drawHud } from './hud.js';
 import { drawMinimap } from './minimap.js';
 import { clearSave, hasSave, loadSave, saveGame } from './save.js';
+import { createRenderer3D } from './render3d.js';
 
 const STEP = 1 / 60;
 const MAX_FRAME = 0.25;
@@ -31,8 +33,9 @@ const seedParam = Number.parseInt(params.get('seed') ?? '', 10);
 const seed = Number.isInteger(seedParam) ? seedParam : 1337;
 
 const canvas = document.getElementById('game');
+const hudCanvas = document.getElementById('hud');
 const status = document.getElementById('status');
-const ctx = canvas.getContext('2d');
+const hudCtx = hudCanvas.getContext('2d');
 
 function buildGame(seedValue) {
   const random = createRandom(seedValue);
@@ -66,7 +69,9 @@ function buildGame(seedValue) {
     worldRoadX: ROAD_X,
     worldRoadY: ROAD_Y,
     objectiveText: '',
-    cam: { x: 0, y: 0 },
+    viewWidth: 1280,
+    viewHeight: 720,
+    renderer: null,
     spawnRepoCar() {
       const car = createCar(SPOTS.suburbs.x + 60, SPOTS.suburbs.y + 40, 0, '#e8b93c', KIND_PARKED);
       cars.push(car);
@@ -148,16 +153,17 @@ function stepGame(game, input, dt) {
     const mouse = input.mouse();
     const shootPressed = (actions & ACTION_SHOOT) || mouse.down;
     if (shootPressed) {
-      const aim = Math.atan2(
-        mouse.y + game.cam.y - player.y,
-        mouse.x + game.cam.x - player.x,
-      );
-      if (mouse.x !== 0 || mouse.y !== 0) player.angle = aim;
+      // Aim at the cursor: raycast the mouse onto the ground plane.
+      if ((mouse.x !== 0 || mouse.y !== 0) && game.renderer) {
+        const aim = game.renderer.aimAngle(mouse.x, mouse.y, game.viewWidth, game.viewHeight);
+        if (aim !== null) player.angle = aim;
+      }
       tryShoot(game.combat, player, player.angle, game.audio);
     }
   }
 
-  // Movement.
+  // Movement. On foot, WASD moves relative to the follow camera, so W
+  // always walks away from the camera; driving steers relative to the car.
   if (player.inCar) {
     const car = player.inCar;
     const throttle = (input.up() ? 1 : 0) - (input.down() ? 1 : 0);
@@ -168,7 +174,19 @@ function stepGame(game, input, dt) {
     player.angle = car.angle;
     game.audio.engineSpeed(Math.abs(car.speed) / 560);
   } else {
-    updatePlayerOnFoot(player, input, game.world, dt);
+    const move = input.move();
+    let moveVec = null;
+    if (game.renderer && (move.x !== 0 || move.y !== 0)) {
+      const f = game.renderer.cameraForward();
+      const r = { x: -f.y, y: f.x };
+      moveVec = {
+        x: f.x * -move.y + r.x * move.x,
+        y: f.y * -move.y + r.y * move.x,
+      };
+      const len = Math.hypot(moveVec.x, moveVec.y) || 1;
+      moveVec = { x: moveVec.x / len, y: moveVec.y / len };
+    }
+    updatePlayerOnFoot(player, input, game.world, dt, moveVec);
   }
 
   updateTraffic(game.traffic, player, game.world, game.random, dt);
@@ -203,67 +221,23 @@ function stepGame(game, input, dt) {
   }
 }
 
-function updateCamera(game, width, height) {
-  const px = game.player.x;
-  const py = game.player.y;
-  game.cam.x = clamp(px - width / 2, 0, WORLD_W - width);
-  game.cam.y = clamp(py - height / 2, 0, WORLD_H - height);
-  if (width > WORLD_W) game.cam.x = (WORLD_W - width) / 2;
-  if (height > WORLD_H) game.cam.y = (WORLD_H - height) / 2;
+function resize(game) {
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  const width = window.innerWidth;
+  const height = window.innerHeight;
+  hudCanvas.width = Math.round(width * ratio);
+  hudCanvas.height = Math.round(height * ratio);
+  hudCtx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  if (game && game.renderer) game.renderer.resize(width, height);
+  if (game) { game.viewWidth = width; game.viewHeight = height; }
 }
 
-function resize() {
-  const ratio = window.devicePixelRatio || 1;
-  canvas.width = Math.round(window.innerWidth * ratio);
-  canvas.height = Math.round(window.innerHeight * ratio);
-  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-}
-
-function drawWorld(game, width, height) {
-  const hour = Math.floor(game.clockMinutes / 60);
-  game.world.drawGround(ctx, game.cam, hour);
-  drawMissionMarker(ctx, game.missions, game, game.cam, game.time);
-  // Collectible packages and the heist cash crate.
-  const active = game.missions.active;
-  if (active && active.def.type === 'collect') {
-    for (const p of active.packages) {
-      if (p.taken) continue;
-      const x = p.x - game.cam.x;
-      const y = p.y - game.cam.y;
-      ctx.fillStyle = '#e8b93c';
-      ctx.fillRect(x - 10, y - 8, 20, 16);
-      ctx.fillStyle = '#1f2937';
-      ctx.font = 'bold 11px system-ui, sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('DROP', x, y + 4);
-    }
-  }
-  if (active && active.def.type === 'heist' && active.stage === 'grab') {
-    const x = active.def.target.x - game.cam.x;
-    const y = active.def.target.y - game.cam.y;
-    ctx.fillStyle = '#4fb06a';
-    ctx.fillRect(x - 12, y - 10, 24, 20);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 14px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('$', x, y + 5);
-  }
-  for (const car of game.cars) drawCar(ctx, car, game.cam, game.time);
-  drawPedestrians(ctx, game.peds, game.cam, game.time);
-  drawPolice(ctx, game.police, game.cam, game.time, drawCar, drawFootCop);
-  drawCombat(ctx, game.combat, game.cam, game.time);
-  if (!game.player.inCar) drawPlayer(ctx, game.player, game.cam, game.time);
-}
-
-function drawScreen(game, width, height) {
-  const hour = Math.floor(game.clockMinutes / 60);
+// The 3D world plus the 2D overlay (HUD, minimap, title, pause, game over).
+function drawScreen(game, width, height, dt) {
+  const ctx = hudCtx;
+  ctx.clearRect(0, 0, width, height);
   if (game.mode === 'start') {
-    // A slow pan over downtown behind the title.
-    game.cam.x = clamp(1200 + Math.sin(game.time * 0.05) * 300, 0, WORLD_W - width);
-    game.cam.y = clamp(500, 0, WORLD_H - height);
-    game.world.drawGround(ctx, game.cam, hour);
-    for (const car of game.cars) drawCar(ctx, car, game.cam, game.time);
-    drawPedestrians(ctx, game.peds, game.cam, game.time);
+    game.renderer.render(dt, 'start');
     ctx.fillStyle = 'rgba(10,14,24,0.55)';
     ctx.fillRect(0, 0, width, height);
     const cx = width / 2;
@@ -294,8 +268,7 @@ function drawScreen(game, width, height) {
     }
     return;
   }
-  updateCamera(game, width, height);
-  drawWorld(game, width, height);
+  game.renderer.render(dt, 'playing');
   drawHud(ctx, game, width, height);
   drawMinimap(ctx, game, width, height);
 
@@ -349,6 +322,9 @@ function applySave(game, data) {
 
 function runGame() {
   const game = buildGame(seed);
+  const renderer = createRenderer3D(canvas);
+  game.renderer = renderer;
+  renderer.setGame(game);
   const input = createInput(canvas);
   let accumulator = 0;
   let last = performance.now();
@@ -360,6 +336,8 @@ function runGame() {
   function startNew() {
     const fresh = buildGame(seed);
     Object.assign(game, fresh);
+    game.renderer = renderer;
+    renderer.setGame(game);
     game.mode = 'playing';
     clearSave();
     announce('Playing Sunport Heist. Follow the yellow marker.');
@@ -387,17 +365,18 @@ function runGame() {
 
   function frame(now) {
     requestAnimationFrame(frame);
-    accumulator += Math.min((now - last) / 1000, MAX_FRAME);
+    const frameDt = Math.min((now - last) / 1000, MAX_FRAME);
+    accumulator += frameDt;
     last = now;
     const width = window.innerWidth;
     const height = window.innerHeight;
-    if (canvas.width !== Math.round(width * (window.devicePixelRatio || 1))) resize();
+    if (hudCanvas.width !== Math.round(width * (window.devicePixelRatio || 1))) resize(game);
 
     if (game.mode === 'start') {
       game.time += 1 / 60;
       const actions = input.takeActions();
       if (actions & ACTION_CONFIRM) startNew();
-      drawScreen(game, width, height);
+      drawScreen(game, width, height, 1 / 60);
       return;
     }
     if (game.mode === 'paused') {
@@ -408,13 +387,13 @@ function runGame() {
       } else if (actions & ACTION_SAVE) {
         if (saveGame(game)) game.savedNote = 'Progress saved.';
       }
-      drawScreen(game, width, height);
+      drawScreen(game, width, height, 0);
       return;
     }
     if (game.mode === 'over') {
       const actions = input.takeActions();
       if (actions & ACTION_CONFIRM) startNew();
-      drawScreen(game, width, height);
+      drawScreen(game, width, height, 0);
       return;
     }
     while (accumulator >= STEP) {
@@ -422,7 +401,7 @@ function runGame() {
       accumulator -= STEP;
       if (game.mode !== 'playing') break;
     }
-    drawScreen(game, width, height);
+    drawScreen(game, width, height, frameDt);
   }
 
   document.addEventListener('visibilitychange', () => {
@@ -430,13 +409,16 @@ function runGame() {
   });
 
   announce('Sunport Heist. Press Enter or click to start.');
-  resize();
-  window.addEventListener('resize', resize);
+  resize(game);
+  window.addEventListener('resize', () => resize(game));
   requestAnimationFrame(frame);
 }
 
 function stageShot(name) {
   const game = buildGame(seed);
+  const renderer = createRenderer3D(canvas);
+  game.renderer = renderer;
+  renderer.setGame(game);
   game.mode = 'playing';
   const input = createInput(canvas);
   void input;
@@ -455,7 +437,7 @@ function stageShot(name) {
     car.speed = 300;
     game.missions.banner = '';
     game.missions.bannerTimer = 0;
-    for (let i = 0; i < 90; i += 1) stepGameDriveOnly(game);
+    for (let i = 0; i < 55; i += 1) stepGameDriveOnly(game);
   } else if (name === 'chase') {
     // Three stars, two cruisers on the tail, the getaway job running.
     // The car starts south of downtown and drives north, so it ends up
@@ -502,14 +484,14 @@ function stageShot(name) {
   function paint() {
     const width = window.innerWidth;
     const height = window.innerHeight;
-    if (canvas.width !== Math.round(width * (window.devicePixelRatio || 1))) resize();
-    drawScreen(game, width, height);
+    if (hudCanvas.width !== Math.round(width * (window.devicePixelRatio || 1))) resize(game);
+    drawScreen(game, width, height, 1 / 60);
     painted += 1;
     if (painted < 2) requestAnimationFrame(paint);
     else window.__shotReady = true;
   }
-  resize();
-  window.addEventListener('resize', resize);
+  resize(game);
+  window.addEventListener('resize', () => resize(game));
   requestAnimationFrame(paint);
 }
 

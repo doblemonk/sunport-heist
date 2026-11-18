@@ -20,8 +20,10 @@ export function createPlayer(x, y) {
   };
 }
 
-export function updatePlayerOnFoot(player, input, world, dt) {
-  const move = input.move();
+export function updatePlayerOnFoot(player, input, world, dt, moveVec) {
+  // moveVec, when given, is already rotated into world space (camera
+  // relative); otherwise the raw WASD vector is used as-is.
+  const move = moveVec || input.move();
   const speed = input.run() ? PLAYER.runSpeed : PLAYER.walkSpeed;
   player.moving = move.x !== 0 || move.y !== 0;
   if (player.moving) {
@@ -46,46 +48,4 @@ export function hurtPlayer(player, amount) {
   player.health = Math.max(0, player.health - amount);
   player.hurtTimer = 0.6;
   return true;
-}
-
-export function drawPlayer(ctx, player, cam, time) {
-  const x = player.x - cam.x;
-  const y = player.y - cam.y;
-  const bob = player.moving ? Math.sin(time * 12) * 2 : 0;
-  ctx.save();
-  ctx.translate(x, y);
-  // Shadow.
-  ctx.fillStyle = 'rgba(0,0,0,0.3)';
-  ctx.beginPath();
-  ctx.ellipse(0, 10, 13, 6, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.rotate(player.angle);
-  // Body: teal jacket, sun-bleached hair, outstretched punch arm when swinging.
-  ctx.fillStyle = player.hurtTimer > 0 && Math.floor(time * 12) % 2 === 0 ? '#ffffff' : '#0f766e';
-  ctx.beginPath();
-  ctx.arc(0, 0, 13, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#f2c14e';
-  ctx.beginPath();
-  ctx.arc(4, 0, 7, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#1f2937';
-  ctx.fillRect(8, -4, 8, 3);
-  ctx.fillRect(8, 1, 8, 3);
-  if (player.punchTimer > 0.2) {
-    ctx.strokeStyle = '#0f766e';
-    ctx.lineWidth = 5;
-    ctx.beginPath();
-    ctx.moveTo(10, 0);
-    ctx.lineTo(26, 0);
-    ctx.stroke();
-  }
-  ctx.restore();
-  // Health ring above the head when hurt.
-  if (player.health < PLAYER.maxHealth) {
-    ctx.fillStyle = 'rgba(0,0,0,0.5)';
-    ctx.fillRect(x - 18, y - 28 + bob, 36, 6);
-    ctx.fillStyle = player.health > 40 ? '#4fb06a' : '#d94f3d';
-    ctx.fillRect(x - 17, y - 27 + bob, 34 * (player.health / PLAYER.maxHealth), 4);
-  }
 }

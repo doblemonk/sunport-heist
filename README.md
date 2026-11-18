@@ -10,10 +10,11 @@ Six jobs stand between you and freedom — and the whole city, its traffic,
 its pedestrians and its police are in your way.
 
 This is an original game: its city, characters, story, art and music are
-all my own. It is a 2D top-down open world in the spirit of the classic
-era of the genre, built with plain canvas and no libraries, no build step
-and no network requests. Open `game/index.html` in a desktop browser and
-it just plays.
+all my own. It is a 3D low-poly open world in the spirit of the modern
+era of the genre, rendered with Three.js (vendored under game/vendor/),
+with a third-person follow camera, sun and shadows, and a day/night tint;
+no build step and no network requests. Open `game/index.html` in a desktop
+browser and it just plays.
 
 ## How to play
 

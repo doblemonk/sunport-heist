@@ -1,7 +1,6 @@
 // The city of Solmar: its road grid, its buildings, its beach and docks,
 // and the collision tests that keep people and cars out of the walls.
-// Drawing lives here too, because the city is one picture: ground, roads,
-// blocks, roofs, the sea and the container yard.
+// The 3D look lives in render3d.js, which reads the data built here.
 import { DISTRICTS, ROAD_HALF, ROAD_W, ROAD_X, ROAD_Y, WORLD_H, WORLD_W, clamp } from './config.js';
 import { pick, range } from './random.js';
 
@@ -128,118 +127,10 @@ export function createWorld(random) {
     return best;
   }
 
-  function drawGround(ctx, cam, hour) {
-    // District ground.
-    for (const d of DISTRICTS) {
-      ctx.fillStyle = d.ground;
-      ctx.fillRect(d.x0 - cam.x, d.y0 - cam.y, d.x1 - d.x0, d.y1 - d.y0);
-    }
-    // The sea along the west edge, past the sand.
-    ctx.fillStyle = '#3f9ec4';
-    ctx.fillRect(-cam.x - 220, -cam.y, 220, WORLD_H);
-    ctx.fillStyle = '#57b6d9';
-    for (let y = 40; y < WORLD_H; y += 130) {
-      ctx.fillRect(-cam.x - 200, y - cam.y, 170, 6);
-    }
-    // District labels painted on the ground.
-    ctx.font = 'bold 34px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    for (const d of DISTRICTS) {
-      ctx.fillStyle = d.label;
-      ctx.globalAlpha = 0.55;
-      ctx.fillText(d.name.toUpperCase(), (d.x0 + d.x1) / 2 - cam.x, (d.y0 + d.y1) / 2 - cam.y);
-      ctx.globalAlpha = 1;
-    }
-    // Roads.
-    ctx.fillStyle = '#3a3f47';
-    for (const rx of ROAD_X) ctx.fillRect(rx - ROAD_HALF - cam.x, -cam.y, ROAD_W, WORLD_H);
-    for (const ry of ROAD_Y) ctx.fillRect(-cam.x, ry - ROAD_HALF - cam.y, WORLD_W, ROAD_W);
-    // Centre dashes.
-    ctx.fillStyle = '#e8d44f';
-    for (const rx of ROAD_X) {
-      for (let y = 20; y < WORLD_H; y += 90) ctx.fillRect(rx - 3 - cam.x, y - cam.y, 6, 44);
-    }
-    for (const ry of ROAD_Y) {
-      for (let x = 20; x < WORLD_W; x += 90) ctx.fillRect(x - cam.x, ry - 3 - cam.y, 44, 6);
-    }
-    // Crosswalks at every intersection.
-    ctx.fillStyle = '#e8e4da';
-    for (const rx of ROAD_X) {
-      for (const ry of ROAD_Y) {
-        for (let k = -2; k <= 2; k += 1) {
-          ctx.fillRect(rx + k * 18 - 6 - cam.x, ry - ROAD_HALF + 6 - cam.y, 12, 18);
-          ctx.fillRect(rx + k * 18 - 6 - cam.x, ry + ROAD_HALF - 24 - cam.y, 12, 18);
-        }
-      }
-    }
-    // Beach umbrellas.
-    for (const u of beachUmbrellas) {
-      ctx.fillStyle = '#e8e4da';
-      ctx.beginPath();
-      ctx.arc(u.x - cam.x, u.y - cam.y, 16, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#d94f3d';
-      ctx.beginPath();
-      ctx.arc(u.x - cam.x, u.y - cam.y, 16, 0, Math.PI);
-      ctx.fill();
-    }
-    // Containers.
-    for (const c of containers) {
-      ctx.save();
-      ctx.translate(c.x - cam.x, c.y - cam.y);
-      ctx.rotate(c.angle);
-      ctx.fillStyle = c.color;
-      ctx.fillRect(-c.w / 2, -c.h / 2, c.w, c.h);
-      ctx.strokeStyle = 'rgba(0,0,0,0.3)';
-      ctx.strokeRect(-c.w / 2, -c.h / 2, c.w, c.h);
-      ctx.restore();
-    }
-    // Trees.
-    for (const t of trees) {
-      ctx.fillStyle = '#3f7a44';
-      ctx.beginPath();
-      ctx.arc(t.x - cam.x, t.y - cam.y, t.r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = '#5da85f';
-      ctx.beginPath();
-      ctx.arc(t.x - 3 - cam.x, t.y - 3 - cam.y, t.r * 0.6, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    // Buildings with roofs, shade and windows.
-    for (const b of buildings) {
-      ctx.fillStyle = 'rgba(0,0,0,0.25)';
-      ctx.fillRect(b.x + 8 - cam.x, b.y + 10 - cam.y, b.w, b.h);
-      ctx.fillStyle = b.color;
-      ctx.fillRect(b.x - cam.x, b.y - cam.y, b.w, b.h);
-      ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(b.x - cam.x, b.y - cam.y, b.w, b.h);
-      ctx.fillStyle = 'rgba(255,255,255,0.55)';
-      const cols = Math.max(1, Math.floor(b.w / 34));
-      for (let i = 0; i < b.windows; i += 1) {
-        const wx = b.x + 12 + (i % cols) * 34;
-        const wy = b.y + 12 + Math.floor(i / cols) * 30;
-        if (wx + 16 < b.x + b.w && wy + 12 < b.y + b.h) ctx.fillRect(wx - cam.x, wy - cam.y, 16, 12);
-      }
-      if (b.tall) {
-        ctx.fillStyle = 'rgba(255,255,255,0.25)';
-        ctx.fillRect(b.x + 6 - cam.x, b.y + 6 - cam.y, b.w - 12, 10);
-      }
-    }
-    // Night tint handled by the caller through `hour`; a warm dusk wash here.
-    if (hour >= 18 || hour < 6) {
-      ctx.fillStyle = 'rgba(20, 30, 80, 0.28)';
-      ctx.fillRect(-cam.x, -cam.y, WORLD_W, WORLD_H);
-    } else if (hour >= 16) {
-      ctx.fillStyle = 'rgba(255, 140, 60, 0.10)';
-      ctx.fillRect(-cam.x, -cam.y, WORLD_W, WORLD_H);
-    }
-  }
-
   return {
     buildings, trees, containers, beachUmbrellas,
     collides, moveWithCollision, nearestRoadPoint,
-    roadAt, onRoadX, onRoadY, districtAt, drawGround,
+    roadAt, onRoadX, onRoadY, districtAt,
   };
 }
 
