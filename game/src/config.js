@@ -1,61 +1,82 @@
-// Every tuning number and colour in one place. The playfield is a fixed 1280x720 logical area;
-// the renderer scales it to the window, so no rule below depends on the screen size.
+// Sunport Heist — shared tuning and city constants.
+// Every number the rest of the game reads lives here, so balancing the
+// chase, the traffic and the missions means editing one file.
+export const WORLD_W = 3600;
+export const WORLD_H = 2600;
+export const ROAD_W = 120;
+export const ROAD_HALF = ROAD_W / 2;
 
-export const FIELD = { width: 1280, height: 720, groundY: 664 };
-
-/** The simulation's fixed step, in seconds: 60 updates a second whatever the display's rate. */
-export const STEP = 1 / 60;
+// Road centrelines. The city is a grid; blocks between roads hold buildings.
+export const ROAD_X = [350, 850, 1350, 1850, 2350, 2850];
+export const ROAD_Y = [300, 750, 1200, 1650, 2100];
 
 export const PLAYER = {
-  width: 72,
-  height: 24,
-  speed: 560,
-  invulnerable: 1.5,
+  walkSpeed: 230,
+  runSpeed: 330,
+  radius: 14,
+  maxHealth: 100,
+  punchDamage: 25,
+  punchRange: 36,
+  punchCooldown: 0.35,
 };
 
-export const LIVES = 3;
-
-export const BLOCK = {
-  minWidth: 40,
-  maxWidth: 110,
-  height: 36,
-  speed: 240,
-  speedPerLevel: 30,
-  speedJitter: 90,
-  interval: 0.55,
-  intervalScale: 0.88,
-  minInterval: 0.14,
-  dodgePoints: 1,
+export const CAR = {
+  accel: 420,
+  brake: 700,
+  reverseAccel: 260,
+  maxSpeed: 560,
+  maxReverse: 180,
+  turnRate: 2.6,
+  radius: 20,
 };
 
-export const COIN = {
-  size: 24,
-  speed: 190,
-  speedPerLevel: 14,
-  interval: 1.4,
-  intervalJitter: 0.8,
-  points: 10,
+export const WANTED = {
+  max: 5,
+  decayDelay: 8,
+  decayStep: 5,
+  stealGain: 1,
+  assaultGain: 1,
+  killGain: 2,
 };
 
-/** Seconds of play per level, and the last level: speeds and spawn rates stop growing there. */
-export const LEVEL = { seconds: 12, max: 12 };
+export const DISTRICTS = [
+  { name: 'Palma Beach', x0: 0, y0: 0, x1: 620, y1: 2600, ground: '#e8c98a', label: '#b98d4f' },
+  { name: 'Downtown Solmar', x0: 620, y0: 0, x1: 2100, y1: 1350, ground: '#9aa38f', label: '#5c6656' },
+  { name: 'Old Docks', x0: 2100, y0: 1350, x1: 3600, y1: 2600, ground: '#8d8578', label: '#5f584c' },
+  { name: 'Marina Hills', x0: 620, y0: 1350, x1: 2100, y1: 2600, ground: '#a8b08a', label: '#6d7a52' },
+  { name: 'North Suburbs', x0: 2100, y0: 0, x1: 3600, y1: 1350, ground: '#a3b18a', label: '#67784f' },
+];
 
-/** How many falling things can exist at once; the pool is allocated once, at boot. */
-export const POOL_SIZE = 64;
+export const CAR_COLORS = [
+  '#d94f3d', '#3d7bd9', '#e8b93c', '#4fb06a', '#8a5fd0',
+  '#e8e4da', '#2f3542', '#e07b39', '#39c0c8', '#c83d7a',
+];
 
-export const PALETTE = {
-  backdrop: '#11141b',
-  sky: '#1b1f2a',
-  ground: '#2a3040',
-  player: '#4fc3f7',
-  block: '#e5534b',
-  coin: '#f2c94c',
-  panel: '#252b38',
-  text: '#eef1f5',
-  muted: '#8b93a3',
+export const PED_COLORS = [
+  '#f2c14e', '#7ec8e3', '#e27d60', '#a3d9a5', '#d9a5e3',
+  '#f4f1ea', '#e8a13c', '#6a8caf',
+];
+
+// Starting spots the game reuses for missions, parking and spawns.
+export const SPOTS = {
+  hideout: { x: 1350, y: 1650, label: 'Hideout' },
+  beach: { x: 350, y: 1200, label: 'Palma Beach' },
+  downtown: { x: 1350, y: 750, label: 'Downtown' },
+  docks: { x: 2850, y: 2100, label: 'Old Docks' },
+  suburbs: { x: 2350, y: 300, label: 'North Suburbs' },
+  marina: { x: 850, y: 2100, label: 'Marina Hills' },
 };
 
 export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
+export const SAVE_KEY = 'sunport-heist.save.v1';
 
-/** Where the best score is kept between visits (this browser only). */
-export const BEST_KEY = 'block-dodger.best';
+export function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+export function lerp(a, b, t) { return a + (b - a) * t; }
+export function dist(ax, ay, bx, by) { return Math.hypot(ax - bx, ay - by); }
+export function angleTo(ax, ay, bx, by) { return Math.atan2(by - ay, bx - ax); }
+export function angleDiff(a, b) {
+  let d = b - a;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
