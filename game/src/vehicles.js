@@ -1,363 +1,360 @@
 import * as THREE from '../vendor/three.min.js';
 
-// Sunport Heist — vehicles (cars): low-poly car meshes, parked drivable
-// cars, the car the player drives, and the driving physics. Forward is
-// local positive Z. Traffic also uses the mesh builder, so every car on
-// the road looks like a car the player can steal.
+const KNOWN_KINDS = ['sedan', 'coupe', 'taxi', 'truck', 'cruiser'];
 
-// Driving specifications. The configuration's per-kind numbers win;
-// underneath them sits a slower generic set so a missing kind still drives.
 const FALLBACK_SPECS = {
-  sedan:   { topSpeed: 28, acceleration: 14, braking: 24, reverseSpeed: 10, steering: 1.9 },
-  coupe:   { topSpeed: 34, acceleration: 17, braking: 24, reverseSpeed: 10, steering: 2.1 },
-  taxi:    { topSpeed: 28, acceleration: 14, braking: 24, reverseSpeed: 10, steering: 1.9 },
-  truck:   { topSpeed: 22, acceleration: 9,  braking: 18, reverseSpeed: 8,  steering: 1.4 },
+  sedan: { topSpeed: 28, acceleration: 14, braking: 24, reverseSpeed: 10, steering: 1.9 },
+  coupe: { topSpeed: 34, acceleration: 17, braking: 24, reverseSpeed: 10, steering: 2.1 },
+  taxi: { topSpeed: 28, acceleration: 14, braking: 24, reverseSpeed: 10, steering: 1.9 },
+  truck: { topSpeed: 22, acceleration: 9, braking: 18, reverseSpeed: 8, steering: 1.4 },
   cruiser: { topSpeed: 36, acceleration: 18, braking: 26, reverseSpeed: 10, steering: 2.0 },
 };
 
-// Fifteen paint colours, used only when the configuration has no paint list.
-const FALLBACK_PAINTS = [
-  0xcc2222, 0x2266cc, 0x22aa44, 0xffcc00, 0xf2ead8,
-  0x1a1a1a, 0x888888, 0xff7722, 0x8833cc, 0x229999,
-  0xcc5500, 0x334455, 0xcccccc, 0xcc99ff, 0x99dd99,
-];
+const GREY = 0x888888;
+const GLASS = 0x18222e;
+const WHEEL_RADIUS = 0.36;
 
-const KNOWN_KINDS = ['sedan', 'coupe', 'taxi', 'truck', 'cruiser'];
-const PARKED_KINDS = ['sedan', 'coupe', 'taxi'];
-const WHEEL_RADIUS = 0.42;
-const CAR_RADIUS = 1.3;
-const ENTER_DISTANCE = 3.5;
-const EXIT_CLEARANCE = 2.4;
-const FULL_GRIP_SPEED = 9;
+function normaliseKind(kind) {
+  return KNOWN_KINDS.indexOf(kind) >= 0 ? kind : 'sedan';
+}
 
-// Small helper: a box mesh placed at (x, y, z).
-function box(width, height, depth, material, x, y, z) {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
+function box(w, h, d, colour, x, y, z) {
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(w, h, d),
+    new THREE.MeshStandardMaterial({ color: colour, roughness: 0.6, metalness: 0.2 }),
+  );
   mesh.position.set(x, y, z);
+  mesh.castShadow = true;
   return mesh;
 }
 
-// Car-mesh builder: body box, cabin box slightly rear of centre in dark
-// glass (a truck gets a front cab and an open bed instead), four cylinder
-// wheels with hubs, headlights facing local forward and taillights facing
-// backward, a yellow taxi sign for taxis, and a black roof bar with blue
-// and red flashing boxes for cruisers. The group carries its wheels in its
-// user data so other systems can spin them. Unknown kind builds as a sedan;
-// a missing colour defaults to grey.
-export function createCarMesh(kind, color) {
-  const k = KNOWN_KINDS.includes(kind) ? kind : 'sedan';
-  const paint = color === undefined || color === null ? 0x888888 : color;
+function makeWheel(x, z) {
+  const wheel = new THREE.Mesh(
+    new THREE.CylinderGeometry(WHEEL_RADIUS, WHEEL_RADIUS, 0.26, 12),
+    new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.9, metalness: 0.1 }),
+  );
+  wheel.rotation.z = Math.PI / 2;
+  wheel.position.set(x, WHEEL_RADIUS, z);
+  wheel.castShadow = true;
+  const hub = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.18, 0.18, 0.3, 10),
+    new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.4, metalness: 0.6 }),
+  );
+  wheel.add(hub);
+  return wheel;
+}
 
+export function buildCarMesh(kind, colour) {
+  const k = normaliseKind(kind);
+  const paint = colour === undefined || colour === null ? GREY : colour;
   const group = new THREE.Group();
-  const bodyMat = new THREE.MeshLambertMaterial({ color: paint });
-  const glassMat = new THREE.MeshStandardMaterial({ color: 0x16222e, roughness: 0.25, metalness: 0.5 });
-  const darkMat = new THREE.MeshLambertMaterial({ color: 0x1c1c1c });
-  const tyreMat = new THREE.MeshLambertMaterial({ color: 0x141414 });
-  const hubMat = new THREE.MeshLambertMaterial({ color: 0x9a9a9a });
+
+  // Main body, low and long. Forward is local +Z.
+  group.add(box(1.9, 0.55, 4.2, paint, 0, 0.62, 0));
 
   if (k === 'truck') {
-    // A truck has a front cab and an open bed instead of a cabin.
-    group.add(box(2.0, 0.5, 4.4, bodyMat, 0, 0.65, 0));        // bed floor
-    group.add(box(1.9, 1.05, 1.5, bodyMat, 0, 1.42, 1.35));    // cab
-    group.add(box(1.7, 0.65, 0.08, glassMat, 0, 1.5, 2.12));   // windshield
-    group.add(box(0.12, 0.55, 2.4, bodyMat, -0.94, 1.15, -0.9)); // bed walls
-    group.add(box(0.12, 0.55, 2.4, bodyMat, 0.94, 1.15, -0.9));
-    group.add(box(2.0, 0.55, 0.12, bodyMat, 0, 1.15, -2.14));
+    // Front cab and an open bed instead of a closed cabin.
+    group.add(box(1.9, 0.95, 1.3, paint, 0, 1.0, 1.35));
+    group.add(box(1.6, 0.45, 1.0, GLASS, 0, 1.15, 1.45));
+    group.add(box(1.9, 0.28, 2.5, paint, 0, 0.68, -0.85));
+    group.add(box(0.08, 0.42, 2.5, paint, -0.91, 0.95, -0.85));
+    group.add(box(0.08, 0.42, 2.5, paint, 0.91, 0.95, -0.85));
+    group.add(box(1.9, 0.42, 0.08, paint, 0, 0.95, -2.06));
   } else {
-    group.add(box(2.0, 0.75, 4.4, bodyMat, 0, 0.75, 0));       // body
-    group.add(box(1.7, 0.6, 2.2, glassMat, 0, 1.42, -0.35));   // cabin, rear of centre
+    // Cabin slightly rear of centre, in dark glass.
+    const cabin = new THREE.Mesh(
+      new THREE.BoxGeometry(1.6, 0.5, 2.1),
+      new THREE.MeshStandardMaterial({ color: GLASS, roughness: 0.2, metalness: 0.6 }),
+    );
+    cabin.position.set(0, 1.12, -0.25);
+    cabin.castShadow = true;
+    group.add(cabin);
   }
 
-  // Four wheels. Each wheel lives in its own group so it can spin around
-  // the axle (local X) as the car moves.
-  const wheels = [];
-  const wheelSpots = [[-0.95, 1.45], [0.95, 1.45], [-0.95, -1.45], [0.95, -1.45]];
-  for (const [wx, wz] of wheelSpots) {
-    const wheel = new THREE.Group();
-    wheel.position.set(wx, WHEEL_RADIUS, wz);
-    const tyre = new THREE.Mesh(
-      new THREE.CylinderGeometry(WHEEL_RADIUS, WHEEL_RADIUS, 0.32, 12), tyreMat);
-    tyre.rotation.z = Math.PI / 2;
-    wheel.add(tyre);
-    const hub = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.2, 0.2, 0.34, 8), hubMat);
-    hub.rotation.z = Math.PI / 2;
-    wheel.add(hub);
-    group.add(wheel);
-    wheels.push(wheel);
-  }
+  const wheels = [
+    makeWheel(-0.95, 1.35),
+    makeWheel(0.95, 1.35),
+    makeWheel(-0.95, -1.35),
+    makeWheel(0.95, -1.35),
+  ];
+  for (const wheel of wheels) group.add(wheel);
+  group.userData.wheels = wheels;
 
-  // Headlights face local forward (+Z); taillights face backward.
-  const lightMat = new THREE.MeshBasicMaterial({ color: 0xfff6c0 });
-  const tailMat = new THREE.MeshBasicMaterial({ color: 0xcc1111 });
-  group.add(box(0.35, 0.18, 0.08, lightMat, -0.6, 0.75, 2.21));
-  group.add(box(0.35, 0.18, 0.08, lightMat, 0.6, 0.75, 2.21));
-  group.add(box(0.35, 0.18, 0.08, tailMat, -0.6, 0.75, -2.21));
-  group.add(box(0.35, 0.18, 0.08, tailMat, 0.6, 0.75, -2.21));
+  // Headlights facing forward, taillights facing backward.
+  const lamp = new THREE.MeshStandardMaterial({
+    color: 0xfff6c0, roughness: 0.3, metalness: 0.1, emissive: 0xfff2a0, emissiveIntensity: 0.6,
+  });
+  for (const x of [-0.6, 0.6]) {
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.18, 0.08), lamp);
+    head.position.set(x, 0.62, 2.12);
+    group.add(head);
+    const tail = new THREE.Mesh(
+      new THREE.BoxGeometry(0.35, 0.18, 0.08),
+      new THREE.MeshStandardMaterial({ color: 0xcc2222, roughness: 0.3, emissive: 0xaa1111, emissiveIntensity: 0.5 }),
+    );
+    tail.position.set(x, 0.62, -2.12);
+    group.add(tail);
+  }
 
   if (k === 'taxi') {
-    const signMat = new THREE.MeshBasicMaterial({ color: 0xffcc00 });
-    group.add(box(0.9, 0.25, 0.4, signMat, 0, 1.85, -0.35));
+    group.add(box(0.8, 0.2, 0.4, 0xffd400, 0, 1.47, -0.25));
   }
 
   if (k === 'cruiser') {
-    group.add(box(1.2, 0.12, 0.4, darkMat, 0, 1.78, -0.35)); // roof bar
-    const blueMat = new THREE.MeshBasicMaterial({ color: 0x2244ff });
-    const redMat = new THREE.MeshBasicMaterial({ color: 0xff2222 });
-    group.add(box(0.45, 0.2, 0.36, blueMat, -0.32, 1.9, -0.35));
-    group.add(box(0.45, 0.2, 0.36, redMat, 0.32, 1.9, -0.35));
+    group.add(box(1.3, 0.14, 0.45, 0x111111, 0, 1.44, -0.25));
+    group.add(box(0.5, 0.18, 0.4, 0x2244ff, -0.32, 1.58, -0.25));
+    group.add(box(0.5, 0.18, 0.4, 0xff2222, 0.32, 1.58, -0.25));
   }
 
-  group.userData.wheels = wheels;
   return group;
 }
 
-// Vehicles factory. Takes the game and returns the vehicles object.
-// Quirk, preserved on purpose: this module does NOT offer a despawn action.
-// The police module handles a missing despawn by removing a cruiser's mesh
-// from the scene itself. Do not add one.
-export function createVehicles(game) {
-  const config = game.config || {};
-  const scene = game.scene;
-  const world = game.world;
-  const rng = game.rng || {
-    next: () => 0.5,
-    range: (min, max) => (min + max) / 2,
-    int: (min) => min,
-    pick: (list) => list[0],
-    shuffle: (list) => list.slice(),
-  };
-
-  const paints = config.carColors || config.paintColors || config.carPaints || FALLBACK_PAINTS;
-  const specTable = config.carSpecs || config.cars || config.carSpec || config.vehicles || {};
-
-  // One kind's driving specification: configuration over the generic set.
-  function specFor(kind) {
-    const base = FALLBACK_SPECS[kind] || FALLBACK_SPECS.sedan;
-    const over = specTable[kind] || {};
+function specsFrom(raw, fallback) {
+  if (!raw) return { ...fallback };
+  if (Array.isArray(raw)) {
     return {
-      topSpeed: over.topSpeed !== undefined ? over.topSpeed : base.topSpeed,
-      acceleration: over.acceleration !== undefined ? over.acceleration : base.acceleration,
-      braking: over.braking !== undefined ? over.braking : base.braking,
-      reverseSpeed: over.reverseSpeed !== undefined ? over.reverseSpeed : base.reverseSpeed,
-      steering: over.steering !== undefined ? over.steering : base.steering,
+      topSpeed: raw[0] !== undefined ? raw[0] : fallback.topSpeed,
+      acceleration: raw[1] !== undefined ? raw[1] : fallback.acceleration,
+      braking: raw[2] !== undefined ? raw[2] : fallback.braking,
+      reverseSpeed: raw[3] !== undefined ? raw[3] : fallback.reverseSpeed,
+      steering: raw[4] !== undefined ? raw[4] : fallback.steering,
     };
   }
+  return {
+    topSpeed: raw.topSpeed !== undefined ? raw.topSpeed : (raw.maxSpeed !== undefined ? raw.maxSpeed : fallback.topSpeed),
+    acceleration: raw.acceleration !== undefined ? raw.acceleration : (raw.accel !== undefined ? raw.accel : fallback.acceleration),
+    braking: raw.braking !== undefined ? raw.braking : (raw.brake !== undefined ? raw.brake : fallback.braking),
+    reverseSpeed: raw.reverseSpeed !== undefined ? raw.reverseSpeed : (raw.reverse !== undefined ? raw.reverse : fallback.reverseSpeed),
+    steering: raw.steering !== undefined ? raw.steering : (raw.steer !== undefined ? raw.steer : fallback.steering),
+  };
+}
+
+export function createVehicles(game) {
+  const config = (game && game.config) || {};
+  const carSpecs = config.carSpecs || {};
+  const paintList = Array.isArray(config.carColors) && config.carColors.length > 0
+    ? config.carColors
+    : [GREY];
+
+  // Seeded random source; fall back to a constant one half when it is missing.
+  const rng = (game && game.rng) || null;
+  const next = () => (rng && typeof rng.next === 'function' ? rng.next() : 0.5);
+  const range = (min, max) => (rng && typeof rng.range === 'function'
+    ? rng.range(min, max) : min + (max - min) * 0.5);
+  const pick = (list) => {
+    if (!list || list.length === 0) return undefined;
+    if (rng && typeof rng.pick === 'function') return rng.pick(list);
+    return list[Math.floor(next() * list.length)];
+  };
 
   const vehicles = {
     list: [],
     playerCar: null,
-    spawn,
-    nearest,
-    tryEnterOrExit,
-    update,
+
+    spawn(kind, x, z, heading, colour) {
+      const k = normaliseKind(kind);
+      const paint = colour === undefined || colour === null ? pick(paintList) : colour;
+      const mesh = buildCarMesh(k, paint);
+      mesh.position.set(x, 0, z);
+      mesh.rotation.y = heading || 0;
+      if (game.scene) game.scene.add(mesh);
+      const car = {
+        kind: k,
+        mesh,
+        position: mesh.position,
+        heading: heading || 0,
+        speed: 0,
+        colour: paint,
+        color: paint,
+        specs: specsFrom(carSpecs[k], FALLBACK_SPECS[k]),
+      };
+      vehicles.list.push(car);
+      return car;
+    },
+
+    nearest(x, z, maxDist) {
+      const limit = maxDist === undefined || maxDist === null ? Infinity : maxDist;
+      let best = null;
+      let bestD = limit;
+      for (const car of vehicles.list) {
+        const dx = car.position.x - x;
+        const dz = car.position.z - z;
+        const d = Math.sqrt(dx * dx + dz * dz);
+        if (d < bestD) {
+          bestD = d;
+          best = car;
+        }
+      }
+      return best;
+    },
+
+    tryEnterOrExit() {
+      const player = game.player;
+      if (!player) return false;
+
+      if (vehicles.playerCar) {
+        const car = vehicles.playerCar;
+        // Step out to the car's right side, 2.4 units clear of the body.
+        const rx = Math.cos(car.heading);
+        const rz = -Math.sin(car.heading);
+        player.position.set(car.position.x + rx * 2.4, 0, car.position.z + rz * 2.4);
+        player.heading = car.heading;
+        vehicles.playerCar = null;
+        if (typeof player.exitCar === 'function') player.exitCar();
+        if (game.audio && typeof game.audio.engine === 'function') game.audio.engine(0);
+        return true;
+      }
+
+      if (!player.onFoot && player.car) return false;
+      const car = vehicles.nearest(player.position.x, player.position.z, 3.5);
+      if (!car) return false;
+      vehicles.playerCar = car;
+      if (typeof player.enterCar === 'function') player.enterCar(car);
+      const heat = game.police && typeof game.police.HEAT_STEAL === 'number'
+        ? game.police.HEAT_STEAL
+        : (config.wanted && config.wanted.stealCarHeat !== undefined
+          ? config.wanted.stealCarHeat
+          : (config.wanted && config.wanted.stealCar !== undefined ? config.wanted.stealCar : 1));
+      if (game.police && typeof game.police.addHeat === 'function') game.police.addHeat(heat);
+      if (typeof game.message === 'function') game.message('Car stolen! Heat is on!');
+      return true;
+    },
+
+    update(dt) {
+      if (!game.audio || typeof game.audio.engine !== 'function') {
+        // No audio system: still drive, just silently.
+      }
+      const silenceEngine = () => {
+        if (game.audio && typeof game.audio.engine === 'function') game.audio.engine(0);
+      };
+      if (game.state !== 'playing') {
+        silenceEngine();
+        return;
+      }
+      const car = vehicles.playerCar;
+      if (!car) {
+        silenceEngine();
+        return;
+      }
+
+      const input = game.input;
+      const down = (code) => !!(input && typeof input.down === 'function' && input.down(code));
+      const specs = car.specs;
+      let speed = car.speed;
+
+      const accel = down('KeyW') || down('ArrowUp');
+      const brake = down('KeyS') || down('ArrowDown');
+      const left = down('KeyA') || down('ArrowLeft');
+      const right = down('KeyD') || down('ArrowRight');
+
+      if (accel) {
+        speed += specs.acceleration * dt;
+      } else if (brake) {
+        if (speed > 0) speed -= specs.braking * dt;
+        else speed -= specs.acceleration * dt;
+      } else {
+        // Rolling drag eases the car to a stop.
+        const drag = 8 * dt;
+        if (speed > 0) speed = Math.max(0, speed - drag);
+        else if (speed < 0) speed = Math.min(0, speed + drag);
+      }
+      speed = Math.max(-specs.reverseSpeed, Math.min(specs.topSpeed, speed));
+      if (!accel && !brake && Math.abs(speed) < 0.05) speed = 0;
+
+      // Steering grip rises with speed, full at 9 units per second,
+      // and reverses when the car moves backward.
+      const grip = Math.min(1, Math.abs(speed) / 9);
+      const steerDir = speed < 0 ? -1 : 1;
+      if (left) car.heading += specs.steering * grip * dt * steerDir;
+      if (right) car.heading -= specs.steering * grip * dt * steerDir;
+
+      const world = game.world;
+      const oldX = car.position.x;
+      const oldZ = car.position.z;
+      const stepX = Math.sin(car.heading) * speed * dt;
+      const stepZ = Math.cos(car.heading) * speed * dt;
+      const newX = oldX + stepX;
+      const newZ = oldZ + stepZ;
+      const blocked = (x, z) => !!(world && typeof world.isBlocked === 'function' && world.isBlocked(x, z, 1.2));
+
+      if (!blocked(newX, newZ)) {
+        car.position.x = newX;
+        car.position.z = newZ;
+      } else if (!blocked(newX, oldZ)) {
+        // Slide along X only, at reduced speed.
+        car.position.x = newX;
+        speed *= 0.5;
+      } else if (!blocked(oldX, newZ)) {
+        // Slide along Z only, at reduced speed.
+        car.position.z = newZ;
+        speed *= 0.5;
+      } else {
+        speed = 0;
+      }
+      car.speed = speed;
+
+      // Clamp to the world bounds.
+      const bounds = (world && world.bounds) || null;
+      let minX = -420;
+      let maxX = 420;
+      let minZ = -420;
+      let maxZ = 420;
+      if (bounds) {
+        if (bounds.minX !== undefined) minX = bounds.minX;
+        if (bounds.maxX !== undefined) maxX = bounds.maxX;
+        if (bounds.minZ !== undefined) minZ = bounds.minZ;
+        if (bounds.maxZ !== undefined) maxZ = bounds.maxZ;
+        if (bounds.min !== undefined) { minX = bounds.min; minZ = bounds.min; }
+        if (bounds.max !== undefined) { maxX = bounds.max; maxZ = bounds.max; }
+      }
+      car.position.x = Math.max(minX, Math.min(maxX, car.position.x));
+      car.position.z = Math.max(minZ, Math.min(maxZ, car.position.z));
+
+      car.mesh.rotation.y = car.heading;
+      const wheels = (car.mesh.userData && car.mesh.userData.wheels) || [];
+      for (const wheel of wheels) {
+        wheel.rotation.x += (speed * dt) / WHEEL_RADIUS;
+      }
+
+      // Keep the player riding in the car.
+      if (game.player && game.player.position) {
+        game.player.position.set(car.position.x, 0, car.position.z);
+        game.player.heading = car.heading;
+      }
+
+      if (game.audio && typeof game.audio.engine === 'function') {
+        game.audio.engine(Math.min(1, Math.abs(speed) / specs.topSpeed));
+      }
+    },
   };
 
-  // Build a car, place it, add it to the scene, record it and return it.
-  // An unknown kind spawns as a sedan; a missing colour is picked at random
-  // from the configuration's paint list. A new car starts at speed zero.
-  function spawn(kind, x, z, heading, color) {
-    const k = KNOWN_KINDS.includes(kind) ? kind : 'sedan';
-    const paint = color === undefined || color === null ? rng.pick(paints) : color;
-    const mesh = createCarMesh(k, paint);
-    mesh.position.set(x, 0, z);
-    mesh.rotation.y = heading;
-    scene.add(mesh);
-    const car = {
-      kind: k,
-      mesh,
-      position: mesh.position,
-      heading,
-      speed: 0,
-      color: paint,
-      spec: specFor(k),
-    };
-    vehicles.list.push(car);
-    return car;
-  }
-
-  // The closest car within maxDist of (x, z), or nothing.
-  function nearest(x, z, maxDist) {
-    const limit = maxDist === undefined ? Infinity : maxDist;
-    let best = null;
-    let bestDist = limit;
-    for (const car of vehicles.list) {
-      const dx = car.position.x - x;
-      const dz = car.position.z - z;
-      const d = Math.sqrt(dx * dx + dz * dz);
-      if (d < bestDist) {
-        bestDist = d;
-        best = car;
-      }
-    }
-    return best;
-  }
-
-  // E enters or exits a car. Returns true when it did something.
-  function tryEnterOrExit() {
-    const player = game.player;
-    if (!player) return false;
-
-    // Exit only when the player is genuinely driving the recorded car.
-    // An arrest respawn puts the player back on foot (player.exitCar
-    // clears player.car) without clearing vehicles.playerCar, leaving a
-    // stale record: taking the exit branch on it would teleport the
-    // player 2.4 units beside the old car instead of entering a nearby
-    // one. A stale record is cleared and falls through to the enter
-    // branch below.
-    if (vehicles.playerCar && (player.onFoot || player.car !== vehicles.playerCar)) {
-      vehicles.playerCar = null;
-    }
-
-    if (vehicles.playerCar) {
-      // Step out to the car's right side, clear of the body.
-      const car = vehicles.playerCar;
-      const rightX = Math.cos(car.heading);
-      const rightZ = -Math.sin(car.heading);
-      player.position.set(
-        car.position.x + rightX * EXIT_CLEARANCE,
-        car.position.y,
-        car.position.z + rightZ * EXIT_CLEARANCE,
-      );
-      player.heading = car.heading;
-      vehicles.playerCar = null;
-      if (player.exitCar) player.exitCar();
-      if (game.audio) game.audio.engine(0);
-      return true;
-    }
-
-    const car = nearest(player.position.x, player.position.z, ENTER_DISTANCE);
-    if (!car) return false;
-    vehicles.playerCar = car;
-    if (player.enterCar) player.enterCar(car);
-    const heat = (game.police && game.police.heatSteal)
-      || (config.wanted && config.wanted.stealHeat)
-      || 1;
-    if (game.police && game.police.addHeat) game.police.addHeat(heat);
-    if (game.message) game.message('Car taken — the heat is on!');
-    return true;
-  }
-
-  // Drive the player's car. Only runs while the state is playing.
-  function update(dt) {
-    const audio = game.audio;
-    if (game.state !== 'playing') {
-      if (audio) audio.engine(0);
-      return;
-    }
-    const player = game.player;
-    // Stale-record guard, same as tryEnterOrExit: an arrest respawn puts
-    // the player back on foot without clearing vehicles.playerCar, so a
-    // recorded car the player is not actually driving must not be driven
-    // from here. A stale record is cleared and falls through to the
-    // no-car return below, so the car is not driven this frame.
-    if (vehicles.playerCar && (!player || player.onFoot || player.car !== vehicles.playerCar)) {
-      vehicles.playerCar = null;
-    }
-    const car = vehicles.playerCar;
-    if (!car) {
-      if (audio) audio.engine(0);
-      return;
-    }
-    const spec = car.spec;
-    const input = game.input;
-
-    const forward = input && (input.down('KeyW') || input.down('ArrowUp'));
-    const backward = input && (input.down('KeyS') || input.down('ArrowDown'));
-    const left = input && (input.down('KeyA') || input.down('ArrowLeft'));
-    const right = input && (input.down('KeyD') || input.down('ArrowRight'));
-
-    // Speed: accelerate, brake, or reverse, with rolling drag.
-    if (forward) car.speed += spec.acceleration * dt;
-    if (backward) {
-      if (car.speed > 0.5) car.speed -= spec.braking * dt;
-      else car.speed -= spec.acceleration * 0.6 * dt;
-    }
-    car.speed -= car.speed * 0.25 * dt;
-    if (!forward && !backward) {
-      const stop = 4 * dt;
-      if (Math.abs(car.speed) <= stop) car.speed = 0;
-      else car.speed -= Math.sign(car.speed) * stop;
-    }
-    car.speed = Math.max(-spec.reverseSpeed, Math.min(spec.topSpeed, car.speed));
-
-    // Steering: grip rises with speed up to full grip at 9 units per
-    // second, and reverses when the car moves backward.
-    const grip = Math.min(1, Math.abs(car.speed) / FULL_GRIP_SPEED);
-    let steer = 0;
-    if (left) steer += 1;
-    if (right) steer -= 1;
-    if (steer !== 0 && car.speed !== 0) {
-      car.heading += steer * spec.steering * grip * dt * (car.speed >= 0 ? 1 : -1);
-    }
-
-    // Move along the heading. When the way ahead is blocked, try sliding
-    // along one axis only at reduced speed; otherwise stop.
-    const stepX = Math.sin(car.heading) * car.speed * dt;
-    const stepZ = Math.cos(car.heading) * car.speed * dt;
-    const blocked = world && world.isBlocked;
-    const nextX = car.position.x + stepX;
-    const nextZ = car.position.z + stepZ;
-    if (!blocked || !blocked(nextX, nextZ, CAR_RADIUS)) {
-      car.position.x = nextX;
-      car.position.z = nextZ;
-    } else if (!blocked(nextX, car.position.z, CAR_RADIUS)) {
-      car.position.x = car.position.x + stepX * 0.5;
-    } else if (!blocked(car.position.x, nextZ, CAR_RADIUS)) {
-      car.position.z = car.position.z + stepZ * 0.5;
-    } else {
-      car.speed = 0;
-    }
-
-    // Clamp to the world bounds.
-    const bounds = world && world.bounds;
-    const minX = bounds ? bounds.minX : -420;
-    const maxX = bounds ? bounds.maxX : 420;
-    const minZ = bounds ? bounds.minZ : -420;
-    const maxZ = bounds ? bounds.maxZ : 420;
-    car.position.x = Math.max(minX, Math.min(maxX, car.position.x));
-    car.position.z = Math.max(minZ, Math.min(maxZ, car.position.z));
-
-    // Turn the mesh to the heading and spin the wheels with speed.
-    car.mesh.rotation.y = car.heading;
-    const wheels = car.mesh.userData.wheels || [];
-    for (const wheel of wheels) {
-      wheel.rotation.x += (car.speed * dt) / WHEEL_RADIUS;
-    }
-
-    // The engine hum follows speed as a fraction of top speed.
-    if (audio) audio.engine(Math.min(1, Math.abs(car.speed) / spec.topSpeed));
-  }
-
-  // Initial placement: ten parked drivable cars — two near each of the
-  // hideout, downtown, the beach, the suburbs and the docks — sedan, coupe
-  // or taxi, snapped onto the nearest road with that road's heading and a
-  // random colour. The gold coupe is not among them; missions own that car.
-  const spawnPoints = world && world.spawnPoints;
-  const bases = [
-    (spawnPoints && spawnPoints.hideout) || { x: 0, z: 0 },
-    (spawnPoints && spawnPoints.downtown) || { x: 120, z: 120 },
-    (spawnPoints && spawnPoints.beach) || { x: -360, z: 0 },
-    (spawnPoints && spawnPoints.suburbs) || { x: 120, z: -300 },
-    (spawnPoints && spawnPoints.docks) || { x: 0, z: 300 },
+  // Initial placement: ten parked drivable cars, two near each of five
+  // districts, snapped onto the nearest road with that road's heading.
+  const spawnPoints = (game.world && game.world.spawnPoints) || {};
+  const spots = [
+    spawnPoints.hideout || { x: 0, z: 0 },
+    spawnPoints.downtown || { x: 120, z: 120 },
+    spawnPoints.beach || { x: -360, z: 0 },
+    spawnPoints.suburbs || { x: 120, z: -300 },
+    spawnPoints.docks || { x: 0, z: 300 },
   ];
-  for (const base of bases) {
+  const parkedKinds = ['sedan', 'coupe', 'taxi'];
+  for (const spot of spots) {
     for (let i = 0; i < 2; i++) {
-      let px = base.x;
-      let pz = base.z;
-      let heading = base.heading || 0;
-      if (world && typeof world.nearestRoadPoint === 'function') {
-        const road = world.nearestRoadPoint(base.x, base.z);
+      const cx = spot.x + range(-15, 15);
+      const cz = spot.z + range(-15, 15);
+      let px = cx;
+      let pz = cz;
+      let heading = 0;
+      if (game.world && typeof game.world.nearestRoadPoint === 'function') {
+        const road = game.world.nearestRoadPoint(cx, cz);
         if (road) {
           px = road.x;
           pz = road.z;
           heading = road.heading || 0;
         }
       }
-      const along = i === 0 ? 6 : -6;
-      px += Math.sin(heading) * along;
-      pz += Math.cos(heading) * along;
-      spawn(rng.pick(PARKED_KINDS), px, pz, heading);
+      vehicles.spawn(pick(parkedKinds), px, pz, heading, pick(paintList));
     }
   }
 

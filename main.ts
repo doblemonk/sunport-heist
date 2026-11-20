@@ -38,3 +38,5 @@ const dossier = buildDossier(outputDir, {
   game_path_max_bytes: 1000,
 });
 writeFileSync(join(outputDir, 'dossier.json'), dossier);
+
+// Sunport Heist entrypoint: copies game/ and screenshots/ to the output directory and writes dossier.json via the kit's dossier builder (vendor/makefun-game.ts).
