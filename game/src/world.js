@@ -1,334 +1,93 @@
-// Sunport Heist — the city of Solmar.
-// Builds the whole playable city into the scene from the config: ground
-// coloured by district, a road grid with markings and sidewalks,
-// low-poly buildings, the beach, the marina water, lamps, trees and
-// the sun. Collision is kept as plain rectangles, tested by isBlocked,
-// so driving, walking and the AI never need the meshes themselves.
+// Sunport Heist — world.js (Module 1: the city of Solmar)
+// Builds the whole playable city once into the scene, and provides the
+// collision and road queries every other system uses. Written fresh from
+// the rebuild brief and the rewrite interface document.
 
-import { CONFIG } from './config.js';
-import { createRNG } from './random.js';
+function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
 
-const ROAD_WIDTH = 14;
-const SIDEWALK_WIDTH = 4;
+// Read a rectangle out of a district object, tolerating edge field names.
+function districtRect(d) {
+  const x0 = d.xMin ?? d.x0 ?? d.minX ?? 0, x1 = d.xMax ?? d.x1 ?? d.maxX ?? 0;
+  const z0 = d.zMin ?? d.z0 ?? d.minZ ?? 0, z1 = d.zMax ?? d.z1 ?? d.maxZ ?? 0;
+  return { x0: Math.min(x0, x1), x1: Math.max(x0, x1), z0: Math.min(z0, z1), z1: Math.max(z0, z1) };
+}
+function districtKind(d) { return (d.kind || d.type || d.id || '').toString().toLowerCase(); }
 
-// Ground colours per district kind.
-const GROUND_COLORS = {
-  beach: 0xd9c08a,
-  downtown: 0x6a6f75,
-  docks: 0x7a7568,
-  marina: 0x7fae7a,
-  suburbs: 0x6fae62,
+const DEFAULT_DISTRICTS = [
+  { name: 'Palma Beach', kind: 'beach', xMin: -420, xMax: -240, zMin: -420, zMax: 420 },
+  { name: 'North Suburbs', kind: 'suburbs', xMin: -240, xMax: 420, zMin: -420, zMax: -180 },
+  { name: 'Downtown Solmar', kind: 'downtown', xMin: -240, xMax: 120, zMin: -180, zMax: 180 },
+  { name: 'Marina Hills', kind: 'marina', xMin: 120, xMax: 420, zMin: -180, zMax: 180 },
+  { name: 'Old Docks', kind: 'docks', xMin: -240, xMax: 420, zMin: 180, zMax: 420 },
+];
+const PALETTES = {
+  downtown: [0x8a9ba8, 0x6e7f8a, 0xa8b0b8, 0x7a8fa0, 0x9aa5b1, 0x5f7080],
+  marina: [0xe8c8a0, 0xf0d8b0, 0xc8d8e8, 0xe8b8a0, 0xd8c8e8, 0xb8d8c8],
+  docks: [0xb85c38, 0x2e7f86, 0xc8822e, 0x7a4a3a, 0x4a7a5a, 0x8a6a2a],
+  suburbs: [0xe8c8a0, 0xc8d8e8, 0xf0e0c0, 0xd8b8a0, 0xb8d0a8, 0xe8a8a0],
+  beach: [0xe8d8a0, 0xf0e0b0, 0xd8c890, 0xffffff],
 };
-
-// Building palettes per district kind.
-const BUILDING_COLORS = {
-  downtown: [0x8fa3b8, 0xb8a88f, 0x7d8ea3, 0xa3b8c9, 0x9a8f7d, 0xc9b8a3],
-  marina: [0xe8ddc9, 0xc9d6e8, 0xe8c9a3, 0xd6e8d6, 0xf0e8d8],
-  suburbs: [0xe8b8a3, 0xa3c9e8, 0xe8d6a3, 0xc9a3b8, 0xb8d6a3, 0xe8e8e8],
-  docks: [0xb8542e, 0x2e6fb7, 0x3a7d44, 0xc9a32e, 0x7a4a8a, 0x8a5a2e],
-  beach: [0xe8ddc9, 0xf0e8d8],
-};
+const DISTRICT_GROUND = { beach: 0xe8d8a0, downtown: 0x9aa0a6, docks: 0xb0a090, marina: 0x7fb069, suburbs: 0x8bc07a };
 
 export function createWorld(game) {
-  const THREE = game.THREE;
-  const scene = game.scene;
-  const rng = game.rng || createRNG(CONFIG.seed);
-  const half = CONFIG.worldSize;
-  const spacing = CONFIG.roadSpacing;
-  const districts = CONFIG.districts;
-
-  // Road centrelines, in world units, on both axes.
+  const config = (game && game.config) || {};
+  const THREE = (game && game.THREE) || null;
+  const scene = (game && game.scene) || null;
+  const rng = (game && game.rng) || {
+    next: () => 0.5, range: (a, b) => (a + b) / 2, int: (a, b) => Math.floor((a + b) / 2),
+    pick: (l) => l[Math.floor(l.length / 2)], shuffle: (l) => l.slice(),
+  };
+  const seed = config.seed ?? 1337;
+  void seed; // The random source is already seeded with this value by the entry point.
+  // worldSize is the full width of the city (840) or its half-extent (420);
+  // either way the playable rectangle is -420..420.
+  let half = config.worldSize ?? 420;
+  if (half > 500) half = half / 2;
+  const size = half * 2;
+  const roadSpacing = config.roadSpacing ?? 120;
+  const dayStartHour = config.dayStartHour ?? 8;
+  const dayEndHour = config.dayEndHour ?? 19;
+  const districts = (config.districts && config.districts.length) ? config.districts : DEFAULT_DISTRICTS;
+  // Road centre lines run from -360 to +360 in steps of 120, both axes.
   const roadLines = [];
-  for (let v = -half + 60; v <= half - 60; v += spacing) roadLines.push(v);
-
+  for (let v = -360; v <= 360; v += roadSpacing) roadLines.push(v);
+  const bounds = { minX: -half, maxX: half, minZ: -half, maxZ: half };
   const colliders = [];
-  function addCollider(cx, cz, w, d) {
-    colliders.push({ x0: cx - w / 2, z0: cz - d / 2, x1: cx + w / 2, z1: cz + d / 2 });
+  function addCollider(cx, cz, hw, hd, pad) {
+    const p = pad === undefined ? 0.6 : pad;
+    colliders.push({ left: cx - hw - p, top: cz - hd - p, right: cx + hw + p, bottom: cz + hd + p });
   }
-
-  function districtAt(x, z) {
-    for (const d of districts) {
-      if (x >= d.x0 && x < d.x1 && z >= d.z0 && z < d.z1) return d;
-    }
-    return districts[0];
-  }
-
-  function flat(color, x, z, w, d, y) {
-    const mesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(w, d),
-      new THREE.MeshLambertMaterial({ color }),
-    );
-    mesh.rotation.x = -Math.PI / 2;
-    mesh.position.set(x, y, z);
-    mesh.receiveShadow = true;
-    scene.add(mesh);
-    return mesh;
-  }
-
-  // ---- Ground: grass everywhere, then a tinted slab per district. ----
-  flat(0x5d9e52, 0, 0, half * 2, half * 2, 0);
-  for (const d of districts) {
-    const cx = (d.x0 + d.x1) / 2;
-    const cz = (d.z0 + d.z1) / 2;
-    flat(GROUND_COLORS[d.kind] || 0x6fae62, cx, cz, d.x1 - d.x0, d.z1 - d.z0, 0.01);
-  }
-
-  // ---- Roads, sidewalks and lane markings. ----
-  for (const v of roadLines) {
-    flat(0x2f3338, v, 0, ROAD_WIDTH, half * 2, 0.03); // north-south road
-    flat(0x2f3338, 0, v, half * 2, ROAD_WIDTH, 0.03); // east-west road
-    const sw = ROAD_WIDTH / 2 + SIDEWALK_WIDTH / 2;
-    flat(0x9aa0a6, v - sw, 0, SIDEWALK_WIDTH, half * 2, 0.02);
-    flat(0x9aa0a6, v + sw, 0, SIDEWALK_WIDTH, half * 2, 0.02);
-    flat(0x9aa0a6, 0, v - sw, half * 2, SIDEWALK_WIDTH, 0.02);
-    flat(0x9aa0a6, 0, v + sw, half * 2, SIDEWALK_WIDTH, 0.02);
-  }
-
-  // Centre dashes as one instanced mesh, skipping road crossings.
-  const dashGeo = new THREE.PlaneGeometry(0.35, 5);
-  const dashMat = new THREE.MeshBasicMaterial({ color: 0xf5d76e });
-  const dashSpots = [];
-  for (const v of roadLines) {
-    for (let s = -half + 20; s <= half - 20; s += 16) {
-      const nearCrossing = roadLines.some((c) => Math.abs(s - c) < 12);
-      if (nearCrossing) continue;
-      dashSpots.push({ x: v, z: s, vertical: true });
-      dashSpots.push({ x: s, z: v, vertical: false });
-    }
-  }
-  const dashes = new THREE.InstancedMesh(dashGeo, dashMat, dashSpots.length);
-  const dummy = new THREE.Object3D();
-  dashSpots.forEach((spot, i) => {
-    dummy.position.set(spot.x, 0.05, spot.z);
-    dummy.rotation.set(-Math.PI / 2, 0, spot.vertical ? 0 : Math.PI / 2);
-    dummy.updateMatrix();
-    dashes.setMatrixAt(i, dummy.matrix);
-  });
-  dashes.instanceMatrix.needsUpdate = true;
-  scene.add(dashes);
-
-  // ---- Buildings, one or two per city block, never on a road. ----
-  const boxGeo = new THREE.BoxGeometry(1, 1, 1);
-  const blockCentres = [-300, -180, -60, 60, 180, 300];
-  const roofMat = new THREE.MeshLambertMaterial({ color: 0x3a3f45 });
-
-  for (const bx of blockCentres) {
-    for (const bz of blockCentres) {
-      const district = districtAt(bx, bz);
-      // The beach gets umbrellas, not buildings; the marina's east
-      // blocks are open water.
-      if (district.kind === 'beach') continue;
-      if (district.kind === 'marina' && bx >= 300 && bz >= -180 && bz <= 60) continue;
-
-      const palette = BUILDING_COLORS[district.kind] || BUILDING_COLORS.suburbs;
-      const count = district.kind === 'docks' || district.kind === 'suburbs' ? 2 : 1;
-      for (let k = 0; k < count; k++) {
-        const jx = k === 0 ? -14 : 16;
-        const jz = k === 0 ? -10 : 14;
-        const cx = bx + jx + rng.range(-6, 6);
-        const cz = bz + jz + rng.range(-6, 6);
-        let w, d, h;
-        if (district.kind === 'downtown') {
-          w = rng.range(28, 44); d = rng.range(28, 44); h = rng.range(26, 78);
-        } else if (district.kind === 'marina') {
-          w = rng.range(24, 38); d = rng.range(24, 38); h = rng.range(12, 30);
-        } else if (district.kind === 'docks') {
-          // Stacked shipping containers.
-          w = rng.range(18, 26); d = rng.range(10, 14); h = rng.range(4, 9);
-        } else {
-          w = rng.range(16, 26); d = rng.range(16, 26); h = rng.range(6, 12);
-        }
-        const mat = new THREE.MeshLambertMaterial({ color: rng.pick(palette) });
-        const building = new THREE.Mesh(boxGeo, mat);
-        building.scale.set(w, h, d);
-        building.position.set(cx, h / 2, cz);
-        building.castShadow = true;
-        building.receiveShadow = true;
-        scene.add(building);
-        // A thin darker roof slab, so blocks read as buildings from above.
-        const roof = new THREE.Mesh(boxGeo, roofMat);
-        roof.scale.set(w * 0.92, 1, d * 0.92);
-        roof.position.set(cx, h + 0.5, cz);
-        scene.add(roof);
-        addCollider(cx, cz, w + 1, d + 1);
-      }
-    }
-  }
-
-  // ---- Palma Beach: umbrellas and a lifeguard tower. ----
-  const umbrellaMat = new THREE.MeshLambertMaterial({ color: 0xe85d3d });
-  const umbrellaMat2 = new THREE.MeshLambertMaterial({ color: 0x2e9db7 });
-  const poleMat = new THREE.MeshLambertMaterial({ color: 0x8a7a5a });
-  for (let i = 0; i < 12; i++) {
-    const ux = -390 + rng.range(0, 120);
-    const uz = -360 + i * 62 + rng.range(-14, 14);
-    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 3.4, 6), poleMat);
-    pole.position.set(ux, 1.7, uz);
-    scene.add(pole);
-    const top = new THREE.Mesh(
-      new THREE.ConeGeometry(3.2, 1.4, 8),
-      i % 2 === 0 ? umbrellaMat : umbrellaMat2,
-    );
-    top.position.set(ux, 4, uz);
-    top.castShadow = true;
-    scene.add(top);
-  }
-  const tower = new THREE.Mesh(boxGeo, new THREE.MeshLambertMaterial({ color: 0xf0e8d8 }));
-  tower.scale.set(4, 7, 4);
-  tower.position.set(-330, 3.5, 0);
-  tower.castShadow = true;
-  scene.add(tower);
-  addCollider(-330, 0, 5, 5);
-
-  // ---- Marina water, piers and moored boats. ----
-  const waterMat = new THREE.MeshLambertMaterial({
-    color: 0x2a7fb8, transparent: true, opacity: 0.92,
-  });
-  const water = new THREE.Mesh(new THREE.PlaneGeometry(120, 240), waterMat);
-  water.rotation.x = -Math.PI / 2;
-  water.position.set(360, 0.06, -60);
-  water.receiveShadow = true;
-  scene.add(water);
-  const pierMat = new THREE.MeshLambertMaterial({ color: 0x8a6a45 });
-  for (const pz of [-120, 0]) {
-    const pier = new THREE.Mesh(boxGeo, pierMat);
-    pier.scale.set(46, 1, 6);
-    pier.position.set(322, 0.6, pz);
-    pier.castShadow = true;
-    scene.add(pier);
-  }
-  const boatMat = new THREE.MeshLambertMaterial({ color: 0xe8e8e8 });
-  const boatMat2 = new THREE.MeshLambertMaterial({ color: 0xc0392b });
-  [[350, -140], [375, -40], [350, 20]].forEach(([bx, bz], i) => {
-    const boat = new THREE.Mesh(boxGeo, i % 2 === 0 ? boatMat : boatMat2);
-    boat.scale.set(10, 2.5, 4);
-    boat.position.set(bx, 0.6, bz);
-    boat.rotation.y = rng.range(-0.3, 0.3);
-    scene.add(boat);
-  });
-
-  // ---- Street lamps at the road crossings. ----
-  const lampPoleMat = new THREE.MeshLambertMaterial({ color: 0x2c2f33 });
-  const lampHeadMat = new THREE.MeshBasicMaterial({ color: 0xffe9a3 });
-  for (const vx of roadLines) {
-    for (const vz of roadLines) {
-      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.2, 7, 6), lampPoleMat);
-      pole.position.set(vx + 9, 3.5, vz + 9);
-      scene.add(pole);
-      const head = new THREE.Mesh(new THREE.SphereGeometry(0.55, 8, 6), lampHeadMat);
-      head.position.set(vx + 9, 7.1, vz + 9);
-      scene.add(head);
-    }
-  }
-
-  // ---- Trees, mostly in the suburbs and along the beach. ----
-  const trunkMat = new THREE.MeshLambertMaterial({ color: 0x6a4a2e });
-  const leafMat = new THREE.MeshLambertMaterial({ color: 0x2e7d32 });
-  const leafMat2 = new THREE.MeshLambertMaterial({ color: 0x43a047 });
-  for (let i = 0; i < 42; i++) {
-    const tx = rng.range(-380, 380);
-    const tz = rng.range(-380, 380);
-    if (onRoad(tx, tz)) continue;
-    const district = districtAt(tx, tz);
-    if (district.kind === 'downtown' || district.kind === 'docks') continue;
-    if (isBlocked(tx, tz, 3)) continue;
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.45, 3, 6), trunkMat);
-    trunk.position.set(tx, 1.5, tz);
-    trunk.castShadow = true;
-    scene.add(trunk);
-    const leaves = new THREE.Mesh(
-      new THREE.SphereGeometry(rng.range(2.2, 3.4), 8, 6),
-      i % 2 === 0 ? leafMat : leafMat2,
-    );
-    leaves.position.set(tx, 4.6, tz);
-    leaves.castShadow = true;
-    scene.add(leaves);
-    addCollider(tx, tz, 1.2, 1.2);
-  }
-
-  // ---- Light, sky and fog. ----
-  const sun = new THREE.DirectionalLight(0xfff2d8, 1.2);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.left = -460;
-  sun.shadow.camera.right = 460;
-  sun.shadow.camera.top = 460;
-  sun.shadow.camera.bottom = -460;
-  sun.shadow.camera.far = 1200;
-  scene.add(sun);
-  scene.add(sun.target);
-  const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x8a7a5a, 0.7);
-  scene.add(hemi);
-  scene.fog = new THREE.Fog(0x9fc3e0, 260, 950);
-  scene.background = new THREE.Color(0x87bfe8);
-
-  const morningSun = new THREE.Color(0xffd9a0);
-  const noonSun = new THREE.Color(0xfff6e0);
-  const duskSun = new THREE.Color(0xff8a4a);
-  const morningSky = new THREE.Color(0x9cc3e0);
-  const noonSky = new THREE.Color(0x7ec0ee);
-  const duskSky = new THREE.Color(0xf2a35e);
-
-  function setTimeOfDay(hours) {
-    const h = Math.max(0, Math.min(24, hours));
-    const p = Math.max(0, Math.min(1, (h - CONFIG.dayStartHour) / (CONFIG.dayEndHour - CONFIG.dayStartHour)));
-    const angle = Math.PI * p;
-    sun.position.set(Math.cos(angle) * 380, 120 + Math.sin(angle) * 260, 140);
-    const sunColor = new THREE.Color();
-    const skyColor = new THREE.Color();
-    if (p < 0.5) {
-      sunColor.lerpColors(morningSun, noonSun, p * 2);
-      skyColor.lerpColors(morningSky, noonSky, p * 2);
-    } else {
-      sunColor.lerpColors(noonSun, duskSun, (p - 0.5) * 2);
-      skyColor.lerpColors(noonSky, duskSky, (p - 0.5) * 2);
-    }
-    sun.color.copy(sunColor);
-    sun.intensity = 0.9 + Math.sin(angle) * 0.5;
-    hemi.intensity = 0.55 + Math.sin(angle) * 0.25;
-    scene.background.copy(skyColor);
-    if (scene.fog) scene.fog.color.copy(skyColor);
-  }
-  setTimeOfDay(CONFIG.dayStartHour);
-
-  // ---- Queries used by the player, traffic, peds and missions. ----
-  function nearestLine(value) {
-    let best = roadLines[0];
-    let bestDist = Math.abs(value - best);
-    for (const line of roadLines) {
-      const dist = Math.abs(value - line);
-      if (dist < bestDist) { best = line; bestDist = dist; }
-    }
-    return { line: best, dist: bestDist };
-  }
-
   function isBlocked(x, z, radius) {
     const r = radius || 0;
     if (x - r < -half || x + r > half || z - r < -half || z + r > half) return true;
-    for (const c of colliders) {
-      if (x + r > c.x0 && x - r < c.x1 && z + r > c.z0 && z - r < c.z1) return true;
+    for (let i = 0; i < colliders.length; i++) {
+      const c = colliders[i];
+      if (x + r > c.left && x - r < c.right && z + r > c.top && z - r < c.bottom) return true;
     }
     return false;
   }
-
   function onRoad(x, z) {
-    const dx = nearestLine(x).dist;
-    const dz = nearestLine(z).dist;
-    return Math.min(dx, dz) <= ROAD_WIDTH / 2 + 2;
-  }
-
-  function nearestRoadPoint(x, z) {
-    const nx = nearestLine(x);
-    const nz = nearestLine(z);
-    if (nx.dist <= nz.dist) {
-      // Snap onto the north-south road: drive along Z, heading 0 (+Z).
-      return { x: nx.line, z, heading: 0 };
+    for (let i = 0; i < roadLines.length; i++) {
+      if (Math.abs(x - roadLines[i]) <= 9 || Math.abs(z - roadLines[i]) <= 9) return true;
     }
-    // Snap onto the east-west road: drive along X, heading PI/2 (+X).
-    return { x, z: nz.line, heading: Math.PI / 2 };
+    return false;
   }
-
-  // Named spawn points, all on roads or open ground in their district.
+  function nearestRoadPoint(x, z) {
+    let ns = roadLines[0], ew = roadLines[0];
+    for (let i = 1; i < roadLines.length; i++) {
+      if (Math.abs(x - roadLines[i]) < Math.abs(x - ns)) ns = roadLines[i];
+      if (Math.abs(z - roadLines[i]) < Math.abs(z - ew)) ew = roadLines[i];
+    }
+    if (Math.abs(x - ns) <= Math.abs(z - ew)) return { x: ns, z: z, heading: 0 };
+    return { x: x, z: ew, heading: Math.PI / 2 };
+  }
+  function districtAt(x, z) {
+    for (let i = 0; i < districts.length; i++) {
+      const r = districtRect(districts[i]);
+      if (x >= r.x0 && x <= r.x1 && z >= r.z0 && z <= r.z1) return districts[i];
+    }
+    return null;
+  }
   const spawnPoints = {
     hideout: { x: 0, z: 0, heading: 0 },
     marina: { x: 240, z: -60, heading: Math.PI / 2 },
@@ -337,29 +96,194 @@ export function createWorld(game) {
     suburbs: { x: 120, z: -300, heading: 0 },
     downtown: { x: 120, z: 120, heading: Math.PI },
     vault: { x: 0, z: -120, heading: Math.PI / 2 },
-    beachDrops: [
-      { x: -360, z: -240, heading: 0 },
-      { x: -360, z: 0, heading: 0 },
-      { x: -360, z: 240, heading: 0 },
-    ],
+    beachDrops: [{ x: -360, z: -240, heading: 0 }, { x: -360, z: 0, heading: 0 }, { x: -360, z: 240, heading: 0 }],
     goldCoupe: { x: 240, z: 120, heading: Math.PI / 2 },
     cashCrate: { x: -120, z: 240, heading: 0 },
   };
+  let sun = null, water = null;
+  const waterBaseY = 0.15;
+  let currentHour = dayStartHour;
+  function setTimeOfDay(hour) {
+    currentHour = hour;
+    if (!THREE || !scene) return;
+    const t = clamp((hour - dayStartHour) / (dayEndHour - dayStartHour), 0, 1);
+    // Sun sweeps east to west: low at morning and dusk, high at noon.
+    if (sun) sun.position.set(-Math.cos(Math.PI * t) * 420, Math.sin(Math.PI * t) * 340 + 60, 160);
+    const gold = new THREE.Color(0xffd27a), noon = new THREE.Color(0xfff6e0), dusk = new THREE.Color(0xff8c4a);
+    const sunColour = new THREE.Color();
+    if (t < 0.5) sunColour.lerpColors(gold, noon, t * 2); else sunColour.lerpColors(noon, dusk, (t - 0.5) * 2);
+    if (sun) { sun.color.copy(sunColour); sun.intensity = 0.9 + Math.sin(Math.PI * t) * 0.35; }
+    const morningSky = new THREE.Color(0xffe8c0), noonSky = new THREE.Color(0x87ceeb), duskSky = new THREE.Color(0xff9a66);
+    const skyColour = new THREE.Color();
+    if (t < 0.5) skyColour.lerpColors(morningSky, noonSky, t * 2); else skyColour.lerpColors(noonSky, duskSky, (t - 0.5) * 2);
+    if (scene.background && scene.background.isColor) scene.background.copy(skyColour);
+    else scene.background = skyColour;
+    if (scene.fog) scene.fog.color.copy(skyColour);
+  }
 
-  return {
-    bounds: { minX: -half, maxX: half, minZ: -half, maxZ: half },
-    districts,
-    colliders,
-    isBlocked,
-    onRoad,
-    nearestRoadPoint,
-    spawnPoints,
-    setTimeOfDay,
-
-    // Only the water moves: a slow swell under the boats and piers.
-    update(dt) {
-      const t = game.time || 0;
-      water.position.y = 0.06 + Math.sin(t * 0.7) * 0.04;
-    },
+  // ---- Build the city into the scene (only when the library is present).
+  if (THREE && scene) {
+    const lambert = (color, extra) => new THREE.MeshLambertMaterial(Object.assign({ color: color }, extra || {}));
+    const basic = (color) => new THREE.MeshBasicMaterial({ color: color });
+    function add(geo, material, x, y, z, shadow) {
+      const m = new THREE.Mesh(geo, material);
+      m.position.set(x, y, z);
+      if (shadow) { m.castShadow = true; m.receiveShadow = true; }
+      scene.add(m);
+      return m;
+    }
+    function flat(w, d, material, x, y, z) {
+      const m = add(new THREE.PlaneGeometry(w, d), material, x, y, z);
+      m.rotation.x = -Math.PI / 2; m.receiveShadow = true;
+      return m;
+    }
+    // Grass ground plane covering the whole city.
+    flat(size, size, lambert(0x6fae5e), 0, 0, 0);
+    // One tinted ground slab per district.
+    for (let i = 0; i < districts.length; i++) {
+      const r = districtRect(districts[i]);
+      const kind = districtKind(districts[i]);
+      flat(r.x1 - r.x0, r.z1 - r.z0, lambert(DISTRICT_GROUND[kind] ?? 0x8bc07a), (r.x0 + r.x1) / 2, 0.02 + i * 0.001, (r.z0 + r.z1) / 2);
+    }
+    // Road grid: dark asphalt 14 wide, pale sidewalks 4 wide both sides.
+    const asphalt = lambert(0x333338), sidewalkMat = lambert(0xb8b8a8);
+    for (let i = 0; i < roadLines.length; i++) {
+      const line = roadLines[i];
+      flat(14, size, asphalt, line, 0.04, 0);
+      flat(size, 14, asphalt, 0, 0.04, line);
+      for (const side of [-9, 9]) {
+        flat(4, size, sidewalkMat, line + side, 0.03, 0);
+        flat(size, 4, sidewalkMat, 0, 0.03, line + side);
+      }
+    }
+    // Yellow centre dashes as one instanced mesh, skipping crossings.
+    const dashSpots = [];
+    for (let i = 0; i < roadLines.length; i++) {
+      const line = roadLines[i];
+      for (let v = -half + 8; v <= half - 8; v += 8) {
+        let nearCrossing = false;
+        for (let j = 0; j < roadLines.length; j++) if (Math.abs(v - roadLines[j]) < 11) { nearCrossing = true; break; }
+        if (nearCrossing) continue;
+        dashSpots.push({ x: line, z: v, ew: false }, { x: v, z: line, ew: true });
+      }
+    }
+    const dashes = new THREE.InstancedMesh(new THREE.BoxGeometry(0.5, 0.06, 3), basic(0xf0d040), dashSpots.length);
+    for (let i = 0; i < dashSpots.length; i++) {
+      const m = new THREE.Matrix4();
+      if (dashSpots[i].ew) m.makeRotationY(Math.PI / 2);
+      m.setPosition(dashSpots[i].x, 0.07, dashSpots[i].z);
+      dashes.setMatrixAt(i, m);
+    }
+    dashes.instanceMatrix.needsUpdate = true;
+    scene.add(dashes);
+    // Buildings on the block centres, one or two per block, never on a road.
+    const blockCentres = [-300, -180, -60, 60, 180, 300];
+    for (let bi = 0; bi < blockCentres.length; bi++) {
+      for (let bj = 0; bj < blockCentres.length; bj++) {
+        const bx = blockCentres[bi], bz = blockCentres[bj];
+        const district = districtAt(bx, bz);
+        if (!district) continue;
+        const kind = districtKind(district);
+        if (kind === 'beach') continue; // Beach gets umbrellas instead of buildings.
+        if (kind === 'marina' && bx >= 300) continue; // Marina east blocks are open water.
+        const palette = district.palette || district.colors || PALETTES[kind] || PALETTES.downtown;
+        const count = rng.int(1, 2);
+        for (let k = 0; k < count; k++) {
+          const px = bx + (count === 1 ? 0 : k === 0 ? -22 : 22);
+          const pz = bz + (count === 1 ? 0 : k === 0 ? 18 : -18);
+          let w, d, h;
+          if (kind === 'downtown') { w = rng.range(28, 44); d = rng.range(28, 44); h = rng.range(26, 78); }
+          else if (kind === 'marina') { w = rng.range(24, 38); d = rng.range(24, 38); h = rng.range(12, 30); }
+          else if (kind === 'docks') { w = rng.range(18, 26); d = rng.range(10, 14); h = rng.range(4, 9); }
+          else if (kind === 'suburbs') { w = rng.range(16, 26); d = rng.range(16, 26); h = rng.range(6, 12); }
+          else { w = rng.range(20, 30); d = rng.range(20, 30); h = rng.range(10, 25); }
+          add(new THREE.BoxGeometry(w, h, d), lambert(rng.pick(palette)), px, h / 2, pz, true);
+          add(new THREE.BoxGeometry(w + 1, 0.6, d + 1), lambert(0x333333), px, h + 0.3, pz); // Thin darker roof slab.
+          addCollider(px, pz, w / 2, d / 2);
+          if (kind === 'docks' && rng.next() < 0.5) { // A second stacked container on some blocks.
+            const cw = rng.range(10, 16), ch = rng.range(3, 5);
+            add(new THREE.BoxGeometry(cw, ch, d * 0.7), lambert(rng.pick(palette)), px, h + ch / 2 + 0.6, pz, true);
+          }
+        }
+      }
+    }
+    // Beach: twelve umbrellas (red and blue cones on poles), no buildings.
+    for (let i = 0; i < 12; i++) {
+      const ux = rng.range(-400, -270), uz = rng.range(-380, 380);
+      add(new THREE.CylinderGeometry(0.08, 0.08, 2.4, 6), lambert(0xd8d0c0), ux, 1.2, uz);
+      add(new THREE.ConeGeometry(2.2, 1.2, 8), lambert(i % 2 === 0 ? 0xd83a2e : 0x2e6fd8), ux, 2.9, uz, true);
+    }
+    // Lifeguard tower at x -330, z 0.
+    add(new THREE.BoxGeometry(3, 4, 3), lambert(0xf0e0c0), -330, 2, 0, true);
+    add(new THREE.BoxGeometry(4, 0.4, 4), lambert(0xd83a2e), -330, 4.2, 0);
+    addCollider(-330, 0, 1.5, 1.5);
+    // Marina: water plane 120 by 240 at x 360, z -60, two wooden piers, three moored boats.
+    water = flat(120, 240, lambert(0x2e86ab, { transparent: true, opacity: 0.85 }), 360, waterBaseY, -60);
+    for (const pierZ of [-120, 0]) add(new THREE.BoxGeometry(36, 0.5, 4), lambert(0x8a6a42), 330, 0.4, pierZ, true);
+    const boatHulls = [0xf0f0e8, 0xd8e8f0, 0xf0d8c8], boatSpots = [[345, -140], [375, -60], [350, 20]];
+    for (let i = 0; i < 3; i++) {
+      const boat = new THREE.Group();
+      const hull = new THREE.Mesh(new THREE.BoxGeometry(3, 1, 8), lambert(boatHulls[i]));
+      hull.position.y = 0.5; boat.add(hull);
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 5, 6), lambert(0x6a4a2a));
+      mast.position.y = 3; boat.add(mast);
+      boat.position.set(boatSpots[i][0], waterBaseY, boatSpots[i][1]);
+      scene.add(boat);
+    }
+    // Street lamps (a pole and a glowing head) at every road crossing.
+    for (let i = 0; i < roadLines.length; i++) {
+      for (let j = 0; j < roadLines.length; j++) {
+        const lx = roadLines[i] + 8, lz = roadLines[j] + 8;
+        add(new THREE.CylinderGeometry(0.12, 0.12, 4.5, 6), lambert(0x3a3a3a), lx, 2.25, lz);
+        add(new THREE.SphereGeometry(0.35, 8, 6), basic(0xffe9a0), lx, 4.6, lz);
+      }
+    }
+    // Forty-two trees, mostly in the suburbs and along the beach, never
+    // on a road, never in downtown or the docks, never inside a building.
+    let treesPlaced = 0, treeAttempts = 0;
+    while (treesPlaced < 42 && treeAttempts < 800) {
+      treeAttempts++;
+      let tx, tz;
+      if (rng.next() < 0.65) { tx = rng.range(-230, 410); tz = rng.range(-410, -190); }
+      else { tx = rng.range(-410, -250); tz = rng.range(-410, 410); }
+      if (onRoad(tx, tz) || isBlocked(tx, tz, 1.5)) continue;
+      add(new THREE.CylinderGeometry(0.25, 0.3, 1.4, 6), lambert(0x6a4a2a), tx, 0.7, tz, true);
+      add(new THREE.ConeGeometry(1.8, 3.2, 8), lambert(treesPlaced % 2 === 0 ? 0x3a8a3a : 0x4aa84a), tx, 3, tz, true);
+      addCollider(tx, tz, 0.9, 0.9, 0.4);
+      treesPlaced++;
+    }
+    // The light itself: directional sun with shadows, hemisphere light,
+    // fog and a blue sky background.
+    sun = new THREE.DirectionalLight(0xffd27a, 1.1);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.left = -450; sun.shadow.camera.right = 450;
+    sun.shadow.camera.top = 450; sun.shadow.camera.bottom = -450;
+    sun.shadow.camera.near = 10; sun.shadow.camera.far = 1200;
+    scene.add(sun); scene.add(sun.target);
+    scene.add(new THREE.HemisphereLight(0xbfe3ff, 0x8a7a5a, 0.7));
+    scene.background = new THREE.Color(0x87ceeb);
+    scene.fog = new THREE.Fog(0x87ceeb, 300, 900);
+  }
+  // The sun starts at the morning hour.
+  setTimeOfDay(dayStartHour);
+  function update(dt) {
+    const t = (game && typeof game.time === 'number') ? game.time : currentHour;
+    if (water) water.position.y = waterBaseY + Math.sin(t * 0.6) * 0.12; // Slow swell.
+    void dt;
+  }
+  const world = {
+    bounds: bounds,
+    districts: districts,
+    colliders: colliders,
+    isBlocked: isBlocked,
+    onRoad: onRoad,
+    nearestRoadPoint: nearestRoadPoint,
+    spawnPoints: spawnPoints,
+    setTimeOfDay: setTimeOfDay,
+    update: update,
   };
+  return world;
 }
+
+export default createWorld;
