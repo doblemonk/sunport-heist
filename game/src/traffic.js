@@ -1,10 +1,33 @@
 import * as THREE from '../vendor/three.min.js';
 import { buildCarMesh } from './vehicles.js';
 
-const TWO_PI = Math.PI * 2;
-const KINDS = ['sedan', 'sedan', 'coupe', 'taxi', 'sedan', 'truck'];
-const DEFAULT_COLORS = [0xff4444, 0x4488ff, 0x44aa44, 0xffcc00, 0xf0f0e0, 0x222222];
+// Traffic — ambient cars cruising the roads of Solmar.
+//
+// Cars drive in the right-hand lane, slow for the vehicle ahead, turn at
+// intersections, steer back to the centre line when they drift off the
+// road, and respawn near the player when they wander too far away. Every
+// car is built with the vehicles module's car-mesh builder, so traffic
+// looks exactly like the cars the player can steal.
+//
+// Heading convention: heading 0 drives along positive Z, heading PI/2
+// drives along positive X, so the forward vector is (sin h, cos h) and
+// the right-hand side vector is (cos h, -sin h).
 
+const TWO_PI = Math.PI * 2;
+const START_COUNT = 14;
+const SPAWN_MIN_DIST = 25;
+const SPAWN_MAX_DIST = 110;
+const DESPAWN_DIST = 210;
+const LANE_OFFSET = 2.3;
+const BLOCKED_AHEAD_DIST = 8;
+const BLOCKED_AHEAD_SIDE = 2.4;
+const TURN_RATE = 1.6;
+const RIGHT_TURN_CHANCE = 0.28;
+const LEFT_TURN_CHANCE = 0.28;
+const WHEEL_RADIUS = 0.35;
+
+// Wrap an angle into the range -PI..PI so heading differences take the
+// shortest way around.
 function wrapAngle(angle) {
   while (angle > Math.PI) angle -= TWO_PI;
   while (angle < -Math.PI) angle += TWO_PI;
@@ -15,60 +38,72 @@ export function createTraffic(game) {
   const config = game.config || {};
   const scene = game.scene;
   const world = game.world;
-  const rng = game.rng;
-  const count = config.trafficCount || 14;
-  const colors = (config.carColors && config.carColors.length > 0)
-    ? config.carColors
-    : DEFAULT_COLORS;
+  const rng = game.rng || null;
 
-  function next() {
+  // Seeded random helpers. Never use the language's built-in unseeded
+  // random function; if the game's random source is missing, a constant
+  // one half stands in for every draw so the module still runs.
+  function rnd() {
     if (rng && typeof rng.next === 'function') return rng.next();
     return 0.5;
   }
 
   function range(min, max) {
     if (rng && typeof rng.range === 'function') return rng.range(min, max);
-    return min + (max - min) * 0.5;
+    return min + rnd() * (max - min);
   }
 
   function pick(list) {
     if (rng && typeof rng.pick === 'function') return rng.pick(list);
-    return list[Math.floor(next() * list.length) % list.length];
+    return list[Math.floor(rnd() * list.length)];
   }
 
-  function playerPos() {
+  const paintList = config.carColors || [
+    0xcc2222, 0x2244cc, 0x22aa44, 0xddcc22, 0xf0ead8,
+    0x1a1a1a, 0x888888, 0xff7722, 0x8844cc, 0x229999,
+    0xcc5500, 0x334466, 0xcccccc, 0xbb88dd, 0x88cc88,
+  ];
+  const targetCount = config.trafficCount || START_COUNT;
+  const kinds = ['sedan', 'sedan', 'coupe', 'taxi', 'sedan', 'truck'];
+
+  const cars = [];
+
+  function playerPosition() {
     if (game.player && game.player.position) return game.player.position;
     return { x: 0, y: 0, z: 0 };
   }
 
+  // Spawn one car on a road near the player, in the right-hand lane.
   function spawnCar() {
-    const player = playerPos();
+    const player = playerPosition();
     const angle = range(0, TWO_PI);
-    const distance = range(25, 110);
-    let x = player.x + Math.sin(angle) * distance;
-    let z = player.z + Math.cos(angle) * distance;
+    const dist = range(SPAWN_MIN_DIST, SPAWN_MAX_DIST);
+    const x = player.x + Math.cos(angle) * dist;
+    const z = player.z + Math.sin(angle) * dist;
 
+    // Snap onto the nearest road and take that road's heading.
+    let roadX = x;
+    let roadZ = z;
     let heading = 0;
     if (world && typeof world.nearestRoadPoint === 'function') {
       const road = world.nearestRoadPoint(x, z);
       if (road) {
-        x = road.x;
-        z = road.z;
+        roadX = road.x;
+        roadZ = road.z;
         heading = road.heading || 0;
       }
     }
 
-    // Right-hand lane: 2.3 units to the right of the road direction.
-    // Forward is (sin h, cos h) in x/z, so the local right side is (cos h, -sin h).
+    // Offset to the right of the road direction: the right-hand lane.
     const rightX = Math.cos(heading);
     const rightZ = -Math.sin(heading);
-    x += rightX * 2.3;
-    z += rightZ * 2.3;
+    const px = roadX + rightX * LANE_OFFSET;
+    const pz = roadZ + rightZ * LANE_OFFSET;
 
-    const kind = pick(KINDS);
-    const colour = pick(colors);
+    const kind = pick(kinds);
+    const colour = pick(paintList);
     const mesh = buildCarMesh(kind, colour);
-    mesh.position.set(x, 0, z);
+    mesh.position.set(px, 0, pz);
     mesh.rotation.y = heading;
     if (scene) scene.add(mesh);
 
@@ -82,141 +117,149 @@ export function createTraffic(game) {
       cruise: range(7, 11),
       turnTimer: range(3, 9),
     };
+    cars.push(car);
     return car;
   }
 
-  function removeCar(index, cars) {
+  function removeCar(index) {
     const car = cars[index];
-    if (car && car.mesh && scene) scene.remove(car.mesh);
+    if (!car) return;
     cars.splice(index, 1);
+    if (scene && car.mesh) scene.remove(car.mesh);
   }
 
-  function isBlockedAhead(car, other) {
-    // Is `other` in front of `car` within 8 metres, and within 2.4 units
-    // to the side? Forward is (sin h, cos h), right is (cos h, -sin h).
-    const dx = other.position.x - car.position.x;
-    const dz = other.position.z - car.position.z;
-    const forward = dx * Math.sin(car.heading) + dz * Math.cos(car.heading);
-    if (forward <= 0 || forward > 8) return false;
-    const side = dx * Math.cos(car.heading) - dz * Math.sin(car.heading);
-    return Math.abs(side) < 2.4;
-  }
+  // True when another vehicle sits ahead of this car: in front of it
+  // within 8 metres and within 2.4 units to the side. Checks the other
+  // traffic cars and the car the player is driving.
+  function blockedAhead(car) {
+    const fx = Math.sin(car.heading);
+    const fz = Math.cos(car.heading);
+    const rx = Math.cos(car.heading);
+    const rz = -Math.sin(car.heading);
 
-  const cars = [];
-  for (let i = 0; i < count; i++) {
-    cars.push(spawnCar());
+    function aheadOf(pos) {
+      const dx = pos.x - car.position.x;
+      const dz = pos.z - car.position.z;
+      const ahead = dx * fx + dz * fz;
+      if (ahead <= 0 || ahead > BLOCKED_AHEAD_DIST) return false;
+      const side = dx * rx + dz * rz;
+      return Math.abs(side) < BLOCKED_AHEAD_SIDE;
+    }
+
+    for (let i = 0; i < cars.length; i++) {
+      if (cars[i] === car) continue;
+      if (aheadOf(cars[i].position)) return true;
+    }
+
+    const driven = game.vehicles && game.vehicles.playerCar;
+    if (driven && driven.position && aheadOf(driven.position)) return true;
+    return false;
   }
 
   function update(dt) {
-    if (game.state !== 'playing') return;
-    if (!dt || dt <= 0) dt = 0.016;
+    if (!game || game.state !== 'playing') return;
+    if (!dt || dt <= 0) return;
     if (dt > 0.1) dt = 0.1;
 
-    const player = playerPos();
-    const playerCar = (game.vehicles && game.vehicles.playerCar)
-      ? game.vehicles.playerCar
-      : null;
+    const player = playerPosition();
 
-    // Top the count back up, and replace any car that drifted too far away.
+    // Cars that drifted too far from the player are removed and replaced.
     for (let i = cars.length - 1; i >= 0; i--) {
       const car = cars[i];
       const dx = car.position.x - player.x;
       const dz = car.position.z - player.z;
-      if (dx * dx + dz * dz > 210 * 210) {
-        removeCar(i, cars);
+      if (dx * dx + dz * dz > DESPAWN_DIST * DESPAWN_DIST) {
+        removeCar(i);
+        spawnCar();
       }
     }
-    while (cars.length < count) {
-      cars.push(spawnCar());
-    }
+
+    // Keep the count topped up to the starting number.
+    while (cars.length < targetCount) spawnCar();
 
     for (let i = 0; i < cars.length; i++) {
       const car = cars[i];
 
-      // Slow or stop for a vehicle ahead: other traffic cars, and the
-      // player's car when the player is driving.
-      let blockedAhead = false;
-      for (let j = 0; j < cars.length; j++) {
-        if (j === i) continue;
-        if (isBlockedAhead(car, cars[j])) {
-          blockedAhead = true;
-          break;
-        }
-      }
-      if (!blockedAhead && playerCar && playerCar !== car) {
-        if (isBlockedAhead(car, playerCar)) blockedAhead = true;
-      }
-
-      // Steering: off the road, head back to the road's centre line.
-      // On the road, reconsider the turn when the timer runs out.
+      // Off the road: steer back toward the road's centre line.
       let onRoad = true;
       if (world && typeof world.onRoad === 'function') {
         onRoad = world.onRoad(car.position.x, car.position.z);
       }
-      if (!onRoad) {
-        if (world && typeof world.nearestRoadPoint === 'function') {
-          const road = world.nearestRoadPoint(car.position.x, car.position.z);
-          if (road) car.targetHeading = road.heading || 0;
+      if (!onRoad && world && typeof world.nearestRoadPoint === 'function') {
+        const road = world.nearestRoadPoint(car.position.x, car.position.z);
+        if (road) {
+          const dx = road.x - car.position.x;
+          const dz = road.z - car.position.z;
+          car.targetHeading = Math.atan2(dx, dz);
         }
-      } else {
+      }
+
+      // On the road, when the turn timer runs out, pick a new direction:
+      // about 28% right turn, 28% left turn, the rest straight ahead.
+      if (onRoad) {
         car.turnTimer -= dt;
         if (car.turnTimer <= 0) {
-          const roll = next();
-          if (roll < 0.28) {
-            // Right turn.
-            car.targetHeading = car.heading - Math.PI / 2;
-          } else if (roll < 0.56) {
-            // Left turn.
-            car.targetHeading = car.heading + Math.PI / 2;
-          } else {
-            // Straight ahead.
-            car.targetHeading = car.heading;
+          const roll = rnd();
+          if (roll < RIGHT_TURN_CHANCE) {
+            car.targetHeading = car.targetHeading + Math.PI / 2;
+          } else if (roll < RIGHT_TURN_CHANCE + LEFT_TURN_CHANCE) {
+            car.targetHeading = car.targetHeading - Math.PI / 2;
           }
           car.turnTimer = range(4, 10);
         }
       }
 
-      // Speed eases toward the cruising speed, or toward zero when blocked.
-      const desiredSpeed = blockedAhead ? 0 : car.cruise;
-      const ease = Math.min(1, dt * 1.5);
-      car.speed += (desiredSpeed - car.speed) * ease;
-      if (blockedAhead && car.speed < 0.05) car.speed = 0;
+      // Slow or stop when another vehicle is ahead.
+      const blocked = blockedAhead(car);
+
+      // Speed eases toward the cruising speed, or toward zero when
+      // blocked ahead.
+      const targetSpeed = blocked ? 0 : car.cruise;
+      const ease = Math.min(1, dt * 1.8);
+      car.speed += (targetSpeed - car.speed) * ease;
+      if (car.speed < 0.01 && targetSpeed === 0) car.speed = 0;
 
       // Heading eases toward the target heading, at most 1.6 rad/s.
       const diff = wrapAngle(car.targetHeading - car.heading);
-      const maxTurn = 1.6 * dt;
-      if (diff > maxTurn) {
-        car.heading += maxTurn;
-      } else if (diff < -maxTurn) {
-        car.heading -= maxTurn;
+      const maxTurn = TURN_RATE * dt;
+      if (diff > maxTurn) car.heading += maxTurn;
+      else if (diff < -maxTurn) car.heading -= maxTurn;
+      else car.heading = car.targetHeading;
+
+      // A building in the way: turn away by a right angle and slow
+      // to 40 percent, instead of driving into it.
+      let wayBlocked = false;
+      if (world && typeof world.isBlocked === 'function') {
+        const probeX = car.position.x + Math.sin(car.heading) * 2.5;
+        const probeZ = car.position.z + Math.cos(car.heading) * 2.5;
+        wayBlocked = world.isBlocked(probeX, probeZ, 1.2);
+      }
+      if (wayBlocked) {
+        car.targetHeading = car.heading + Math.PI / 2;
+        car.speed = car.speed * 0.4;
       } else {
-        car.heading += diff;
+        // Move along the heading.
+        car.position.x += Math.sin(car.heading) * car.speed * dt;
+        car.position.z += Math.cos(car.heading) * car.speed * dt;
       }
-      car.heading = wrapAngle(car.heading);
 
-      // Move along the heading; a building in the way means turning away
-      // by a right angle and slowing to 40 percent.
-      const aheadX = car.position.x + Math.sin(car.heading) * 3;
-      const aheadZ = car.position.z + Math.cos(car.heading) * 3;
-      if (world && typeof world.isBlocked === 'function' &&
-          world.isBlocked(aheadX, aheadZ, 1.5)) {
-        car.heading = wrapAngle(car.heading + Math.PI / 2);
-        car.targetHeading = car.heading;
-        car.speed *= 0.4;
-      }
-      car.position.x += Math.sin(car.heading) * car.speed * dt;
-      car.position.z += Math.cos(car.heading) * car.speed * dt;
-
-      // Mesh follows the heading, and the wheels spin with speed.
+      // Mesh turns to the heading and the wheels spin with speed.
       car.mesh.rotation.y = car.heading;
       const wheels = car.mesh.userData && car.mesh.userData.wheels;
       if (wheels) {
         for (let w = 0; w < wheels.length; w++) {
-          wheels[w].rotation.x += (car.speed * dt) / 0.35;
+          wheels[w].rotation.x += (car.speed * dt) / WHEEL_RADIUS;
         }
       }
     }
   }
+
+  // The city starts with 14 traffic cars.
+  for (let i = 0; i < targetCount; i++) spawnCar();
+
+  // THREE is imported from the vendored file; keep the reference so the
+  // import stays live even though the mesh builder owns the geometry.
+  void THREE;
 
   return {
     cars: cars,

@@ -1,25 +1,50 @@
+// pedestrians.js — the walkers of Solmar.
+// Low-poly people strolling the sidewalks, turning at intersections,
+// fleeing gunshots and fast cars, and falling down when punched or shot.
+
 import * as THREE from '../vendor/three.min.js';
 
-const SHIRT_COLORS = [0xd94f3d, 0x3d7bd9, 0x3dd94f, 0xd9c23d, 0x8e44ad, 0x16a085, 0xe67e22, 0xecf0f1, 0x2c3e50, 0xc0392b, 0x3498db, 0xf1c40f];
-const TROUSER_COLORS = [0x2c3e50, 0x34495e, 0x5d6d7e, 0x7b3f00, 0x1a1a1a, 0x4a6741, 0x6c3483, 0x7e5109];
-const SKIN_COLORS = [0xf1c27d, 0xe0ac69, 0xc68642, 0x8d5524, 0xffdbac, 0xa67b5b];
+const SHIRT_COLORS = [
+  0xd94f3d, 0x3d7bd9, 0x3fae5a, 0xe0b93c, 0xe07b2e,
+  0x8a5fd6, 0x2ea8a0, 0xe8e4da, 0xc94f7c, 0x5a6b7a,
+];
+const TROUSER_COLORS = [0x2e3a4d, 0x3a3a3a, 0x4a3226, 0x5a5a5a, 0x22303f];
+const SKIN_COLORS = [0xe8b88a, 0xc98d5f, 0x8a5a34, 0xf0c8a0, 0x6e4423];
+
+const WALK_SPEED = 1.5;
+const FLEE_SPEED = 4;
+const FLEE_TIME = 2.5;
+const SHOT_FLEE_DIST = 28;
+const SHOT_FLEE_AGE = 6;
+const CAR_FLEE_DIST = 12;
+const CAR_FLEE_SPEED = 8;
+const DESPAWN_DIST = 160;
+const STAND_UP_DIST = 60;
+const SPAWN_MIN_DIST = 12;
+const SPAWN_MAX_DIST = 85;
+const SIDEWALK_OFFSET = 5.4;
+const LOOKAHEAD = 0.9;
+
+function fallbackRng() {
+  return {
+    next() { return 0.5; },
+    range(min, max) { return (min + max) / 2; },
+    int(min, max) { return min; },
+    pick(list) { return list[0]; },
+    shuffle(list) { return list.slice(); },
+  };
+}
 
 export function createPedestrians(game) {
-  const config = game.config || {};
+  const rng = game.rng || fallbackRng();
   const scene = game.scene;
   const world = game.world;
-  const rng = game.rng || {
-    next: () => 0.5,
-    range: (min, max) => (min + max) / 2,
-    int: (min) => min,
-    pick: (list) => list[0],
-    shuffle: (list) => list.slice(),
-  };
-  const pedCount = config.pedCount || 24;
+  const player = game.player;
+  const config = game.config || {};
+  const targetCount = typeof config.pedCount === 'number' ? config.pedCount : 24;
 
-  const list = [];
-  let lastShot = { x: 0, z: 0, time: -1000 };
-
+  // The most recent gunshot, so nearby walkers can flee from it.
+  let lastShot = null;
   if (game.events && typeof game.events.on === 'function') {
     game.events.on('gunshot', (data) => {
       if (!data) return;
@@ -27,93 +52,78 @@ export function createPedestrians(game) {
     });
   }
 
-  function playerPos() {
-    if (game.player && game.player.position) return game.player.position;
-    return { x: 0, y: 0, z: 0 };
-  }
+  const list = [];
 
-  function makeLimb(width, height, depth, color, pivotY, offsetY) {
+  function buildLimb(parent, width, height, depth, material, pivotX, pivotY) {
     const pivot = new THREE.Group();
-    pivot.position.y = pivotY;
-    const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(width, height, depth),
-      new THREE.MeshLambertMaterial({ color })
-    );
-    mesh.position.y = offsetY;
-    pivot.add(mesh);
+    pivot.position.set(pivotX, pivotY, 0);
+    const limb = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), material);
+    limb.position.y = -height / 2;
+    pivot.add(limb);
+    parent.add(pivot);
     return pivot;
   }
 
-  function spawnPedestrian() {
-    const p = playerPos();
-    const angle = rng.range(0, Math.PI * 2);
-    const distance = rng.range(12, 85);
-    let x = p.x + Math.cos(angle) * distance;
-    let z = p.z + Math.sin(angle) * distance;
+  function spawnWalker() {
+    const px = player.position.x;
+    const pz = player.position.z;
 
-    let roadHeading = angle;
-    if (world && typeof world.nearestRoadPoint === 'function') {
-      const road = world.nearestRoadPoint(x, z);
-      if (road) {
-        roadHeading = road.heading || 0;
-        const side = rng.next() < 0.5 ? 1 : -1;
-        const perpX = Math.cos(roadHeading);
-        const perpZ = -Math.sin(roadHeading);
-        x = road.x + perpX * 5.4 * side;
-        z = road.z + perpZ * 5.4 * side;
-      }
+    // Pick a spot on a sidewalk near a road, some distance from the player.
+    let x = px;
+    let z = pz;
+    let heading = 0;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const angle = rng.range(0, Math.PI * 2);
+      const dist = rng.range(SPAWN_MIN_DIST, SPAWN_MAX_DIST);
+      const sx = px + Math.cos(angle) * dist;
+      const sz = pz + Math.sin(angle) * dist;
+      const road = world.nearestRoadPoint(sx, sz);
+      // Step sideways off the road's centre line onto the sidewalk.
+      const side = rng.pick([-1, 1]);
+      const perpX = Math.cos(road.heading);
+      const perpZ = -Math.sin(road.heading);
+      x = road.x + perpX * SIDEWALK_OFFSET * side;
+      z = road.z + perpZ * SIDEWALK_OFFSET * side;
+      // Face along the road, in either direction.
+      heading = road.heading + (rng.next() < 0.5 ? 0 : Math.PI);
+      x = Math.max(-415, Math.min(415, x));
+      z = Math.max(-415, Math.min(415, z));
+      if (!world.isBlocked(x, z, 0.5)) break;
     }
 
-    const heading = roadHeading + (rng.next() < 0.5 ? 0 : Math.PI);
-    const shirt = rng.pick(SHIRT_COLORS);
-    const trousers = rng.pick(TROUSER_COLORS);
-    const skin = rng.pick(SKIN_COLORS);
+    // A low-poly person: body box, head box, two legs, two arms.
+    const shirtMat = new THREE.MeshLambertMaterial({ color: rng.pick(SHIRT_COLORS) });
+    const trouserMat = new THREE.MeshLambertMaterial({ color: rng.pick(TROUSER_COLORS) });
+    const skinMat = new THREE.MeshLambertMaterial({ color: rng.pick(SKIN_COLORS) });
 
     const mesh = new THREE.Group();
 
-    const body = new THREE.Mesh(
-      new THREE.BoxGeometry(0.52, 0.65, 0.3),
-      new THREE.MeshLambertMaterial({ color: shirt })
-    );
-    body.position.y = 0.95;
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.55, 0.28), shirtMat);
+    body.position.y = 0.73;
     mesh.add(body);
 
-    const head = new THREE.Mesh(
-      new THREE.BoxGeometry(0.34, 0.34, 0.34),
-      new THREE.MeshLambertMaterial({ color: skin })
-    );
-    head.position.y = 1.45;
+    const head = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.28, 0.28), skinMat);
+    head.position.y = 1.15;
     mesh.add(head);
 
-    const legL = makeLimb(0.18, 0.55, 0.18, trousers, 0.62, -0.27);
-    legL.position.x = -0.14;
-    mesh.add(legL);
+    // Legs pivot at the hip, arms pivot at the shoulder, so they can swing.
+    const legL = buildLimb(mesh, 0.16, 0.46, 0.16, trouserMat, -0.13, 0.46);
+    const legR = buildLimb(mesh, 0.16, 0.46, 0.16, trouserMat, 0.13, 0.46);
+    const armL = buildLimb(mesh, 0.12, 0.44, 0.12, shirtMat, -0.32, 0.96);
+    const armR = buildLimb(mesh, 0.12, 0.44, 0.12, shirtMat, 0.32, 0.96);
 
-    const legR = makeLimb(0.18, 0.55, 0.18, trousers, 0.62, -0.27);
-    legR.position.x = 0.14;
-    mesh.add(legR);
-
-    const armL = makeLimb(0.14, 0.55, 0.14, shirt, 1.22, -0.27);
-    armL.position.x = -0.33;
-    mesh.add(armL);
-
-    const armR = makeLimb(0.14, 0.55, 0.14, shirt, 1.22, -0.27);
-    armR.position.x = 0.33;
-    mesh.add(armR);
-
-    const scale = rng.range(0.92, 1.06);
-    mesh.scale.setScalar(scale);
+    mesh.scale.setScalar(rng.range(0.92, 1.06));
     mesh.position.set(x, 0, z);
     mesh.rotation.y = heading;
-    if (scene) scene.add(mesh);
+    scene.add(mesh);
 
-    const ped = {
+    const walker = {
       mesh,
       position: mesh.position,
       heading,
-      speed: 1.5,
+      speed: WALK_SPEED,
       state: 'walking',
-      walkSpeed: 1.5,
+      walkSpeed: WALK_SPEED,
       downTimer: 0,
       fleeTimer: 0,
       turnTimer: rng.range(2, 6),
@@ -123,175 +133,178 @@ export function createPedestrians(game) {
       armL,
       armR,
     };
-    list.push(ped);
-    return ped;
+    list.push(walker);
+    return walker;
   }
 
-  function removePedestrian(index) {
-    const ped = list[index];
-    if (!ped) return;
-    if (scene && ped.mesh) scene.remove(ped.mesh);
-    list.splice(index, 1);
+  function removeWalker(walker) {
+    const i = list.indexOf(walker);
+    if (i >= 0) list.splice(i, 1);
+    scene.remove(walker.mesh);
+  }
+
+  function replaceWalker(walker) {
+    removeWalker(walker);
+    spawnWalker();
   }
 
   function nearest(x, z, maxDist) {
-    const max = maxDist === undefined || maxDist === null ? Infinity : maxDist;
+    const limit = typeof maxDist === 'number' ? maxDist : Infinity;
     let best = null;
-    let bestDist = max;
-    for (let i = 0; i < list.length; i++) {
-      const ped = list[i];
-      if (ped.state === 'down') continue;
-      const dx = ped.position.x - x;
-      const dz = ped.position.z - z;
-      const d = Math.sqrt(dx * dx + dz * dz);
+    let bestDist = limit;
+    for (const walker of list) {
+      if (walker.state === 'down') continue;
+      const d = Math.hypot(walker.position.x - x, walker.position.z - z);
       if (d < bestDist) {
         bestDist = d;
-        best = ped;
+        best = walker;
       }
     }
     return best;
   }
 
-  function knockDown(ped) {
-    if (!ped || ped.state === 'down') return;
-    ped.state = 'down';
-    ped.speed = 0;
-    ped.downTimer = rng.range(3, 5);
-    ped.fleeTimer = 0;
-    ped.swing = 0;
-    ped.legL.rotation.x = 0;
-    ped.legR.rotation.x = 0;
-    ped.armL.rotation.x = 0;
-    ped.armR.rotation.x = 0;
-    ped.mesh.rotation.x = -Math.PI / 2;
-    ped.mesh.position.y = 0.3;
+  function knockDown(walker) {
+    if (!walker || walker.state === 'down') return;
+    walker.state = 'down';
+    walker.speed = 0;
+    walker.downTimer = rng.range(3, 5);
+    walker.fleeTimer = 0;
+    walker.swing = 0;
+    // Limbs go neutral as the walker goes down.
+    walker.legL.rotation.x = 0;
+    walker.legR.rotation.x = 0;
+    walker.armL.rotation.x = 0;
+    walker.armR.rotation.x = 0;
+    // Tipped flat on its back, lifted slightly off the ground.
+    walker.mesh.rotation.x = -Math.PI / 2;
+    walker.mesh.position.y = 0.25;
   }
 
   function update(dt) {
-    if (game.state !== 'playing') return;
-    if (!dt || dt <= 0) dt = 0.016;
-    if (dt > 0.1) dt = 0.1;
-
-    while (list.length < pedCount) spawnPedestrian();
-
-    const p = playerPos();
-    const now = game.time || 0;
-    const car = game.player ? game.player.car : null;
-    const carSpeed = car ? car.speed || 0 : 0;
+    if (!game || game.state !== 'playing') return;
+    const px = player.position.x;
+    const pz = player.position.z;
+    const car = player.car || null;
 
     for (let i = list.length - 1; i >= 0; i--) {
-      const ped = list[i];
-      const dxPlayer = ped.position.x - p.x;
-      const dzPlayer = ped.position.z - p.z;
-      const distPlayer = Math.sqrt(dxPlayer * dxPlayer + dzPlayer * dzPlayer);
+      const walker = list[i];
+      const distToPlayer = Math.hypot(walker.position.x - px, walker.position.z - pz);
 
-      if (ped.state === 'down') {
-        ped.downTimer -= dt;
-        if (ped.downTimer <= 0) {
-          if (distPlayer > 60) {
-            removePedestrian(i);
-            spawnPedestrian();
+      // A walker on the ground counts its timer down.
+      if (walker.state === 'down') {
+        walker.downTimer -= dt;
+        if (walker.downTimer <= 0) {
+          if (distToPlayer > STAND_UP_DIST) {
+            replaceWalker(walker);
           } else {
-            ped.state = 'walking';
-            ped.speed = ped.walkSpeed;
-            ped.heading = rng.range(0, Math.PI * 2);
-            ped.turnTimer = rng.range(1, 4);
-            ped.mesh.rotation.x = 0;
-            ped.mesh.rotation.y = ped.heading;
-            ped.mesh.position.y = 0;
+            // Stands back up with a fresh random heading.
+            walker.state = 'walking';
+            walker.speed = walker.walkSpeed;
+            walker.heading = rng.range(0, Math.PI * 2);
+            walker.turnTimer = rng.range(2, 6);
+            walker.swing = 0;
+            walker.mesh.rotation.x = 0;
+            walker.mesh.position.y = 0;
+            walker.mesh.rotation.y = walker.heading;
           }
         }
         continue;
       }
 
-      if (distPlayer > 160) {
-        removePedestrian(i);
-        spawnPedestrian();
+      // Too far from the player: swap in a fresh walker nearer by.
+      if (distToPlayer > DESPAWN_DIST) {
+        replaceWalker(walker);
         continue;
       }
 
-      let threatX = 0;
-      let threatZ = 0;
-      let threatened = false;
-
-      const shotDx = ped.position.x - lastShot.x;
-      const shotDz = ped.position.z - lastShot.z;
-      const shotDist = Math.sqrt(shotDx * shotDx + shotDz * shotDz);
-      if (now - lastShot.time < 6 && shotDist < 28) {
-        threatX = lastShot.x;
-        threatZ = lastShot.z;
-        threatened = true;
-      }
-
-      if (!threatened && car && carSpeed > 8 && distPlayer < 12) {
-        threatX = p.x;
-        threatZ = p.z;
-        threatened = true;
-      }
-
-      if (threatened) {
-        if (ped.state !== 'fleeing') {
-          ped.state = 'fleeing';
-          ped.fleeTimer = 2.5;
-          const awayX = ped.position.x - threatX;
-          const awayZ = ped.position.z - threatZ;
-          if (awayX !== 0 || awayZ !== 0) {
-            ped.heading = Math.atan2(awayX, awayZ);
-          }
+      // Flee from a recent nearby gunshot, or from the player's fast car.
+      let threatX = null;
+      let threatZ = null;
+      if (lastShot && (game.time - lastShot.time) <= SHOT_FLEE_AGE) {
+        const shotDist = Math.hypot(walker.position.x - lastShot.x, walker.position.z - lastShot.z);
+        if (shotDist <= SHOT_FLEE_DIST) {
+          threatX = lastShot.x;
+          threatZ = lastShot.z;
         }
       }
+      if (threatX === null && car && car.speed > CAR_FLEE_SPEED) {
+        const carDist = Math.hypot(walker.position.x - car.position.x, walker.position.z - car.position.z);
+        if (carDist <= CAR_FLEE_DIST) {
+          threatX = car.position.x;
+          threatZ = car.position.z;
+        }
+      }
+      if (threatX !== null) {
+        walker.state = 'fleeing';
+        walker.fleeTimer = FLEE_TIME;
+        // Run directly away from the threat.
+        walker.heading = Math.atan2(walker.position.x - threatX, walker.position.z - threatZ);
+      }
 
-      if (ped.state === 'fleeing') {
-        ped.fleeTimer -= dt;
-        ped.speed = 4;
-        if (ped.fleeTimer <= 0) {
-          ped.state = 'walking';
-          ped.speed = ped.walkSpeed;
+      if (walker.state === 'fleeing') {
+        walker.fleeTimer -= dt;
+        walker.speed = FLEE_SPEED;
+        if (walker.fleeTimer <= 0) {
+          walker.state = 'walking';
+          walker.speed = walker.walkSpeed;
+          walker.turnTimer = rng.range(2, 5);
         }
       } else {
-        ped.speed = ped.walkSpeed;
-        ped.turnTimer -= dt;
-        if (ped.turnTimer <= 0) {
-          ped.turnTimer = rng.range(2, 6);
-          let roadHeading = ped.heading;
-          if (world && typeof world.nearestRoadPoint === 'function') {
-            const road = world.nearestRoadPoint(ped.position.x, ped.position.z);
-            if (road) roadHeading = road.heading || 0;
-          }
+        // Walking: re-align to the road when the turn timer runs out.
+        walker.speed = walker.walkSpeed;
+        walker.turnTimer -= dt;
+        if (walker.turnTimer <= 0) {
+          const road = world.nearestRoadPoint(walker.position.x, walker.position.z);
           const roll = rng.next();
+          let newHeading;
           if (roll < 0.6) {
-            ped.heading = roadHeading;
+            // Six times in ten: take the road's heading.
+            newHeading = road.heading;
           } else if (roll < 0.8) {
-            ped.heading = roadHeading + (rng.next() < 0.5 ? Math.PI / 2 : -Math.PI / 2);
+            // Two times in ten: turn a right angle either way.
+            newHeading = road.heading + rng.pick([-1, 1]) * (Math.PI / 2);
+          } else {
+            // Otherwise: keep the current heading.
+            newHeading = walker.heading;
           }
-          if (rng.next() < 0.5) ped.heading += Math.PI;
+          // Half the time, flip around.
+          if (rng.next() < 0.5) newHeading += Math.PI;
+          walker.heading = newHeading;
+          walker.turnTimer = rng.range(4, 9);
         }
       }
 
-      const aheadX = ped.position.x + Math.sin(ped.heading) * ped.speed * dt;
-      const aheadZ = ped.position.z + Math.cos(ped.heading) * ped.speed * dt;
-      if (world && typeof world.isBlocked === 'function' && world.isBlocked(aheadX, aheadZ, 0.5)) {
-        ped.heading += (rng.next() < 0.5 ? 1 : -1) * (Math.PI / 2) + rng.range(-0.25, 0.25);
+      // Step forward, unless the way ahead is blocked.
+      const forwardX = Math.sin(walker.heading);
+      const forwardZ = Math.cos(walker.heading);
+      const aheadX = walker.position.x + forwardX * LOOKAHEAD;
+      const aheadZ = walker.position.z + forwardZ * LOOKAHEAD;
+      if (world.isBlocked(aheadX, aheadZ, 0.4)) {
+        // Turn away by a right angle plus a small random amount.
+        walker.heading += rng.pick([-1, 1]) * (Math.PI / 2) + rng.range(-0.35, 0.35);
       } else {
-        ped.position.x = aheadX;
-        ped.position.z = aheadZ;
+        walker.position.x += forwardX * walker.speed * dt;
+        walker.position.z += forwardZ * walker.speed * dt;
       }
+      walker.mesh.rotation.y = walker.heading;
 
-      ped.mesh.rotation.y = ped.heading;
-      ped.mesh.position.y = 0;
-      ped.swing += dt * ped.speed * 3.5;
-      const amp = ped.state === 'fleeing' ? 0.85 : 0.5;
-      const s = Math.sin(ped.swing);
-      ped.legL.rotation.x = s * amp;
-      ped.legR.rotation.x = -s * amp;
-      ped.armL.rotation.x = -s * amp * 0.8;
-      ped.armR.rotation.x = s * amp * 0.8;
+      // Limbs swing with the stride, wider while fleeing.
+      const fleeing = walker.state === 'fleeing';
+      const amplitude = fleeing ? 0.7 : 0.45;
+      walker.swing += dt * walker.speed * (fleeing ? 3.0 : 2.4);
+      const swing = Math.sin(walker.swing);
+      walker.legL.rotation.x = swing * amplitude;
+      walker.legR.rotation.x = -swing * amplitude;
+      walker.armL.rotation.x = -swing * amplitude * 0.8;
+      walker.armR.rotation.x = swing * amplitude * 0.8;
     }
 
-    while (list.length < pedCount) spawnPedestrian();
+    // Keep the city topped up with walkers.
+    while (list.length < targetCount) spawnWalker();
   }
 
-  for (let i = 0; i < pedCount; i++) spawnPedestrian();
+  // The city starts with a full crowd.
+  for (let i = 0; i < targetCount; i++) spawnWalker();
 
   return { list, nearest, knockDown, update };
 }

@@ -1,186 +1,270 @@
-// Sunport Heist — minimap
-// Draws a top-down map of Solmar on the 180x180 canvas: district blocks,
-// a road grid, the player arrow, traffic and parked cars, police and the
-// pulsing mission marker, with north at the top.
+// Sunport Heist — minimap (game/src/minimap.js)
+//
+// A live 2D minimap pinned to the bottom-right corner of the screen.
+// It shows the whole city at a glance: the five district tints, the
+// road grid, the player, nearby cars, the police and the mission
+// marker, with north marked. It never talks to the network and it
+// never touches the 3D scene — it is a plain 2D canvas layered over
+// the game canvas.
+//
+// The minimap is built by createMinimap(game) and returns an object
+// carrying update. The main loop calls update every frame; the map
+// redraws while the state is playing and stays frozen (but visible)
+// on the title screen, while paused, after a bust, or on the
+// completion screen.
 
 export function createMinimap(game) {
-  const canvas = document.getElementById('minimap');
-  const ctx = canvas ? canvas.getContext('2d') : null;
-  const SIZE = 180;
-  const HALF = SIZE / 2;
+  var config = (game && game.config) || {};
+  // config.worldSize is the half-extent: the city spans
+  // -worldSize..+worldSize (same as world.bounds), so the full map
+  // width is twice that. (Halving it here once showed only the central
+  // quarter of the city and pushed markers past +/-210 off the map.)
+  var half = config.worldSize || 420;
+  var worldSize = half * 2;
 
-  // Muted palette for the districts, cycled when config names no colour.
-  const PALETTE = ['#2e4a3f', '#3f3a2e', '#33404f', '#4a2f3a', '#2f3a4a', '#453d2a'];
+  // Canvas size in CSS pixels: small enough to never cover HUD text.
+  var SIZE = 180;
+  var MARGIN = 8;
 
-  function bounds() {
-    const c = game.config || {};
-    const min = c.worldMin == null ? -420 : c.worldMin;
-    const max = c.worldMax == null ? 420 : c.worldMax;
-    return { min, max, span: Math.max(1, max - min) };
+  var canvas = document.createElement('canvas');
+  canvas.width = SIZE;
+  canvas.height = SIZE;
+  canvas.style.position = 'absolute';
+  canvas.style.right = '14px';
+  canvas.style.bottom = '14px';
+  canvas.style.width = SIZE + 'px';
+  canvas.style.height = SIZE + 'px';
+  canvas.style.zIndex = '5';
+  canvas.style.pointerEvents = 'none';
+  canvas.style.borderRadius = '6px';
+  document.body.appendChild(canvas);
+
+  var ctx = canvas.getContext('2d');
+
+  // District tint colours for the map, keyed by district kind.
+  // Beach sand west strip, downtown grey, docks tan-grey,
+  // marina green, suburbs green.
+  var DISTRICT_COLORS = {
+    beach: '#d9c48a',
+    downtown: '#8a8f96',
+    docks: '#a89a7e',
+    marina: '#7fae6e',
+    suburbs: '#6fae63'
+  };
+
+  function districtColor(district) {
+    if (!district) return '#5b7a52';
+    var kind = district.kind || district.name || '';
+    if (DISTRICT_COLORS[kind]) return DISTRICT_COLORS[kind];
+    var name = String(kind).toLowerCase();
+    if (name.indexOf('beach') >= 0) return DISTRICT_COLORS.beach;
+    if (name.indexOf('downtown') >= 0) return DISTRICT_COLORS.downtown;
+    if (name.indexOf('dock') >= 0) return DISTRICT_COLORS.docks;
+    if (name.indexOf('marina') >= 0) return DISTRICT_COLORS.marina;
+    if (name.indexOf('suburb') >= 0) return DISTRICT_COLORS.suburbs;
+    if (district.color) return district.color;
+    return '#5b7a52';
   }
 
-  function toMap(x, z, b) {
-    return [
-      ((x - b.min) / b.span) * SIZE,
-      ((z - b.min) / b.span) * SIZE,
-    ];
+  // World x/z -> map pixel. The whole +/-420 city fits with a margin.
+  function toMapX(x) {
+    return MARGIN + ((x + half) / worldSize) * (SIZE - MARGIN * 2);
   }
 
-  function drawDistricts(b) {
-    const districts = game.config && game.config.districts;
-    if (Array.isArray(districts) && districts.length) {
-      districts.forEach((d, i) => {
-        const [px, py] = toMap(d.x0 != null ? d.x0 : 0, d.z0 != null ? d.z0 : 0, b);
-        const [qx, qy] = toMap(d.x1 != null ? d.x1 : 0, d.z1 != null ? d.z1 : 0, b);
-        ctx.fillStyle = d.color || PALETTE[i % PALETTE.length];
-        ctx.fillRect(px, py, qx - px, qy - py);
-      });
-      return;
-    }
-    // Fallback: a quiet 3x3 block layout when config carries no districts.
-    for (let gx = 0; gx < 3; gx++) {
-      for (let gz = 0; gz < 3; gz++) {
-        ctx.fillStyle = PALETTE[(gx * 3 + gz) % PALETTE.length];
-        const px = 12 + gx * 56;
-        const py = 12 + gz * 56;
-        ctx.fillRect(px, py, 48, 48);
-      }
-    }
+  function toMapY(z) {
+    // North is negative Z, so negative Z maps to the top of the canvas.
+    return MARGIN + ((z + half) / worldSize) * (SIZE - MARGIN * 2);
   }
 
-  function drawRoads(b) {
-    const roads = game.config && game.config.roads;
-    ctx.strokeStyle = 'rgba(220, 220, 205, 0.55)';
-    ctx.lineWidth = 1;
-    if (Array.isArray(roads) && roads.length) {
-      roads.forEach((r) => {
-        const [x1, y1] = toMap(r.x1 != null ? r.x1 : r.x, r.z1 != null ? r.z1 : r.z, b);
-        const [x2, y2] = toMap(r.x2 != null ? r.x2 : r.x, r.z2 != null ? r.z2 : r.z, b);
-        ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x2, y2);
-        ctx.stroke();
-      });
-      return;
-    }
-    // Fallback grid: avenues every 84 world units.
-    for (let v = -336; v <= 336; v += 84) {
-      const [ax, ay] = toMap(v, b.min, b);
-      const [bx, by] = toMap(v, b.max, b);
-      ctx.beginPath();
-      ctx.moveTo(ax, ay);
-      ctx.lineTo(bx, by);
-      ctx.stroke();
-      const [cx, cy] = toMap(b.min, v, b);
-      const [dx, dy] = toMap(b.max, v, b);
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(dx, dy);
-      ctx.stroke();
+  function drawDistricts() {
+    var districts = [];
+    if (game.world && game.world.districts) districts = game.world.districts;
+    else if (config.districts) districts = config.districts;
+    for (var i = 0; i < districts.length; i++) {
+      var d = districts[i];
+      if (!d || !d.bounds) continue;
+      var b = d.bounds;
+      var x0 = toMapX(b.minX !== undefined ? b.minX : (b.x0 !== undefined ? b.x0 : -half));
+      var y0 = toMapY(b.minZ !== undefined ? b.minZ : (b.z0 !== undefined ? b.z0 : -half));
+      var x1 = toMapX(b.maxX !== undefined ? b.maxX : (b.x1 !== undefined ? b.x1 : half));
+      var y1 = toMapY(b.maxZ !== undefined ? b.maxZ : (b.z1 !== undefined ? b.z1 : half));
+      ctx.fillStyle = districtColor(d);
+      ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
     }
   }
 
-  function dot(x, z, b, color, r) {
-    const [px, py] = toMap(x, z, b);
+  function drawRoads() {
+    var spacing = config.roadSpacing || 120;
+    ctx.strokeStyle = 'rgba(40, 40, 44, 0.55)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    var c;
+    for (c = -360; c <= 360; c += spacing) {
+      ctx.moveTo(toMapX(c), toMapY(-half));
+      ctx.lineTo(toMapX(c), toMapY(half));
+      ctx.moveTo(toMapX(-half), toMapY(c));
+      ctx.lineTo(toMapX(half), toMapY(c));
+    }
+    ctx.stroke();
+  }
+
+  function drawDot(x, z, radius, color) {
     ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.arc(px, py, r, 0, Math.PI * 2);
+    ctx.arc(toMapX(x), toMapY(z), radius, 0, Math.PI * 2);
     ctx.fill();
   }
 
-  function drawStar(px, py, r, color) {
-    ctx.fillStyle = color;
+  function drawPlayer() {
+    var player = game.player;
+    if (!player || !player.position) return;
+    var px = toMapX(player.position.x);
+    var py = toMapY(player.position.z);
+    var heading = player.heading || 0;
+    // The map's up is north (negative Z). The triangle points along
+    // the player's heading, measured from north.
+    var len = 7;
+    var wid = 5;
+    var tipX = px + Math.sin(heading) * len;
+    var tipY = py - Math.cos(heading) * len;
+    var leftX = px + Math.sin(heading + 2.5) * wid;
+    var leftY = py - Math.cos(heading + 2.5) * wid;
+    var rightX = px + Math.sin(heading - 2.5) * wid;
+    var rightY = py - Math.cos(heading - 2.5) * wid;
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#222222';
+    ctx.lineWidth = 1;
     ctx.beginPath();
-    for (let i = 0; i < 10; i++) {
-      const ang = (i / 10) * Math.PI * 2 - Math.PI / 2;
-      const rad = i % 2 === 0 ? r : r * 0.45;
-      const sx = px + Math.cos(ang) * rad;
-      const sy = py + Math.sin(ang) * rad;
-      if (i === 0) ctx.moveTo(sx, sy);
-      else ctx.lineTo(sx, sy);
-    }
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(leftX, leftY);
+    ctx.lineTo(rightX, rightY);
     ctx.closePath();
     ctx.fill();
+    ctx.stroke();
   }
 
-  function update(dt) {
-    if (!ctx) return;
-    const b = bounds();
-
-    ctx.clearRect(0, 0, SIZE, SIZE);
-    ctx.fillStyle = '#101c26';
-    ctx.fillRect(0, 0, SIZE, SIZE);
-
-    drawDistricts(b);
-    drawRoads(b);
-
-    // Traffic and parked cars as grey dots.
-    const cars = [];
-    if (game.vehicles && Array.isArray(game.vehicles.list)) cars.push(...game.vehicles.list);
-    if (game.traffic && Array.isArray(game.traffic.cars)) cars.push(...game.traffic.cars);
-    cars.forEach((car) => {
-      const x = car.x != null ? car.x : car.position ? car.position.x : 0;
-      const z = car.z != null ? car.z : car.position ? car.position.z : 0;
-      dot(x, z, b, '#9aa3a8', 1.6);
-    });
-
-    // Police cruisers and foot cops as blue dots.
-    if (game.police) {
-      (game.police.cruisers || []).forEach((c) => {
-        const x = c.x != null ? c.x : c.position ? c.position.x : 0;
-        const z = c.z != null ? c.z : c.position ? c.position.z : 0;
-        dot(x, z, b, '#3fa9ff', 2.2);
-      });
-      (game.police.cops || []).forEach((c) => {
-        const x = c.x != null ? c.x : c.position ? c.position.x : 0;
-        const z = c.z != null ? c.z : c.position ? c.position.z : 0;
-        dot(x, z, b, '#7cc4ff', 1.8);
-      });
+  function drawCars() {
+    var i;
+    var list = [];
+    if (game.vehicles && game.vehicles.list) list = game.vehicles.list;
+    for (i = 0; i < list.length; i++) {
+      var car = list[i];
+      if (!car || !car.position) continue;
+      if (game.vehicles.playerCar && car === game.vehicles.playerCar) continue;
+      drawDot(car.position.x, car.position.z, 2, car.color || '#cccccc');
     }
-
-    // Mission marker: a pulsing yellow star.
-    const marker = game.missions ? game.missions.markerPos : null;
-    if (marker) {
-      const mx = marker.x != null ? marker.x : marker.position ? marker.position.x : 0;
-      const mz = marker.z != null ? marker.z : marker.position ? marker.position.z : 0;
-      const [px, py] = toMap(mx, mz, b);
-      const pulse = 4 + Math.sin((game.time || 0) * 5) * 1.4;
-      drawStar(px, py, pulse + 2, '#ffd23f');
+    var traffic = [];
+    if (game.traffic && game.traffic.cars) traffic = game.traffic.cars;
+    for (i = 0; i < traffic.length; i++) {
+      var tcar = traffic[i];
+      if (!tcar || !tcar.position) continue;
+      drawDot(tcar.position.x, tcar.position.z, 2, tcar.color || '#cccccc');
     }
+  }
 
-    // Player as a white triangle rotated by heading.
-    if (game.player) {
-      const px0 = game.player.x != null ? game.player.x : game.player.position ? game.player.position.x : 0;
-      const pz0 = game.player.z != null ? game.player.z : game.player.position ? game.player.position.z : 0;
-      const [px, py] = toMap(px0, pz0, b);
-      const h = game.player.heading || 0;
-      // Canvas angle: forward (sin h, cos h) in canvas (x, y-down)
-      // coordinates. A triangle drawn pointing up (0,-6) rotated by
-      // angle t points at (sin t, -cos t), so t = PI - h faces forward.
-      const ang = Math.PI - h;
-      ctx.save();
-      ctx.translate(px, py);
-      ctx.rotate(ang);
-      ctx.fillStyle = '#ffffff';
-      ctx.strokeStyle = '#101c26';
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(0, -6);
-      ctx.lineTo(4.5, 5);
-      ctx.lineTo(-4.5, 5);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-      ctx.restore();
+  function drawPolice() {
+    var i;
+    var police = game.police;
+    if (!police) return;
+    var cruisers = police.cruisers || [];
+    for (i = 0; i < cruisers.length; i++) {
+      var cruiser = cruisers[i];
+      // A cruiser carries no position of its own; it lives on its vehicle.
+      var pos = cruiser && cruiser.vehicle && cruiser.vehicle.position;
+      if (!pos) continue;
+      drawDot(pos.x, pos.z, 3, '#2f6df6');
     }
+    var cops = police.cops || [];
+    for (i = 0; i < cops.length; i++) {
+      var cop = cops[i];
+      // A foot cop's position lives on its mesh.
+      var cpos = cop && cop.mesh && cop.mesh.position;
+      if (!cpos) continue;
+      drawDot(cpos.x, cpos.z, 2, '#1a2f7a');
+    }
+  }
 
-    // North mark at the top.
+  function drawMissionMarker(time) {
+    var missions = game.missions;
+    if (!missions) return;
+    if (!missions.current) return;
+    var marker = null;
+    if (missions.markerPos) {
+      marker = typeof missions.markerPos === 'function'
+        ? missions.markerPos()
+        : missions.markerPos;
+    }
+    if (!marker) return;
+    var mx = marker.x;
+    var mz = marker.z;
+    if (mx === undefined || mz === undefined) return;
+    // Pulsing yellow diamond: the radius breathes with elapsed time.
+    var pulse = 5 + Math.sin(time * 4) * 1.5;
+    var px = toMapX(mx);
+    var py = toMapY(mz);
+    ctx.fillStyle = '#ffd21a';
+    ctx.strokeStyle = '#7a5c00';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(px, py - pulse);
+    ctx.lineTo(px + pulse, py);
+    ctx.lineTo(px, py + pulse);
+    ctx.lineTo(px - pulse, py);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  function drawNorth() {
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 11px sans-serif';
+    ctx.font = 'bold 12px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
-    ctx.fillText('N', HALF, 3);
+    ctx.fillText('N', SIZE / 2, 3);
   }
 
-  return { update };
+  function draw(time) {
+    ctx.clearRect(0, 0, SIZE, SIZE);
+    // Dark translucent background with a border.
+    ctx.fillStyle = 'rgba(12, 16, 22, 0.72)';
+    ctx.fillRect(0, 0, SIZE, SIZE);
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.45)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(0.75, 0.75, SIZE - 1.5, SIZE - 1.5);
+    // Clip everything inside the frame so dots never spill over it.
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(1, 1, SIZE - 2, SIZE - 2);
+    ctx.clip();
+    drawDistricts();
+    drawRoads();
+    drawCars();
+    drawPolice();
+    drawMissionMarker(time);
+    drawPlayer();
+    ctx.restore();
+    drawNorth();
+  }
+
+  var drawnOnce = false;
+
+  function update(dt) {
+    var time = (game && game.time) || 0;
+    var state = game && game.state;
+    if (state === 'playing') {
+      draw(time);
+      drawnOnce = true;
+    } else if (!drawnOnce) {
+      // Title, paused, busted or complete: keep the map visible but
+      // static — draw it once from the starting state and leave it.
+      draw(time);
+      drawnOnce = true;
+    }
+    void dt;
+  }
+
+  return {
+    canvas: canvas,
+    update: update
+  };
 }
