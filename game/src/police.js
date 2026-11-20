@@ -1,52 +1,87 @@
-// Sunport Heist — police: the wanted level, cruisers, foot cops, arrests, heat decay.
-// The police module owns the wanted level and publishes it onto the game every frame.
+// police.js — wanted level, police cruisers, foot cops, arrests, heat decay.
+// Factory: createPolice(game) returns the police object, which owns the
+// wanted level as the single source of truth and publishes it onto the
+// game object every frame. Cruisers and foot cops carry no position of
+// their own: a cruiser's position lives on its vehicle, a cop's on its mesh.
 
-export function createPolice(game) {
-  const THREE = game.THREE;
-  const config = game.config || {};
-  const wantedConfig = config.wanted || {};
+function createPolice(game) {
+  var THREE = game.THREE;
+  var scene = game.scene;
+  var rng = game.rng || {
+    next: function () { return 0.5; },
+    range: function (min, max) { return (min + max) / 2; },
+    int: function (min, max) { return min; },
+    pick: function (list) { return list[0]; },
+    shuffle: function (list) { return list.slice(); }
+  };
+  var config = game.config || {};
+  var wantedCfg = config.wanted || {};
 
-  const maxStars = wantedConfig.maxStars ?? 5;
-  const heatSteal = wantedConfig.stealCarHeat ?? wantedConfig.stealCar ?? 1;
-  const heatPunch = wantedConfig.punchPedHeat ?? wantedConfig.punchPed ?? 1;
-  const heatHitCop = wantedConfig.hitCopHeat ?? wantedConfig.hitCop ?? 1;
-  const decaySeconds = wantedConfig.decaySeconds ?? wantedConfig.decayDelay ?? 20;
-  const hiddenDistance = wantedConfig.hiddenDistance ?? wantedConfig.hideDistance ?? 40;
-  const arrestSeconds = wantedConfig.bustedStandSeconds ?? wantedConfig.standStillSeconds ?? 3;
-  const arrestRadius = wantedConfig.bustedRadius ?? 2;
+  var maxStars = wantedCfg.maxStars != null ? wantedCfg.maxStars : 5;
+  var decaySeconds = wantedCfg.decaySeconds != null
+    ? wantedCfg.decaySeconds
+    : (wantedCfg.decayDelay != null ? wantedCfg.decayDelay : 20);
+  var hiddenDistance = wantedCfg.hiddenDistance != null
+    ? wantedCfg.hiddenDistance
+    : (wantedCfg.hideDistance != null ? wantedCfg.hideDistance : 40);
+  var arrestSeconds = wantedCfg.bustedStandSeconds != null
+    ? wantedCfg.bustedStandSeconds
+    : (wantedCfg.standStillSeconds != null ? wantedCfg.standStillSeconds : 3);
+  var arrestRadius = wantedCfg.bustedRadius != null ? wantedCfg.bustedRadius : 2;
 
-  // Seeded random source; fall back to a constant one half when it is missing.
-  const rng = game.rng || null;
-  function rand() {
-    if (rng && typeof rng.next === 'function') return rng.next();
-    return 0.5;
-  }
-  function randRange(min, max) {
-    if (rng && typeof rng.range === 'function') return rng.range(min, max);
-    return min + (max - min) * 0.5;
-  }
-  function randPick(list) {
-    if (rng && typeof rng.pick === 'function') return rng.pick(list);
-    return list[Math.floor(rand() * list.length)];
-  }
+  var heatSteal = wantedCfg.stealCarHeat != null
+    ? wantedCfg.stealCarHeat
+    : (wantedCfg.stealCar != null ? wantedCfg.stealCar : 1);
+  var heatPunch = wantedCfg.punchPedHeat != null
+    ? wantedCfg.punchPedHeat
+    : (wantedCfg.punchPed != null ? wantedCfg.punchPed : 1);
+  var heatHitCop = wantedCfg.hitCopHeat != null
+    ? wantedCfg.hitCopHeat
+    : (wantedCfg.hitCop != null ? wantedCfg.hitCop : 1);
 
-  function wrapAngle(angle) {
-    while (angle > Math.PI) angle -= Math.PI * 2;
-    while (angle < -Math.PI) angle += Math.PI * 2;
-    return angle;
-  }
+  // How many cruisers and foot cops each wanted level fields.
+  // [cruisers, cops] per level, index 0 is level zero.
+  var ROSTER = [
+    [0, 0],
+    [1, 1],
+    [1, 2],
+    [2, 2],
+    [3, 3],
+    [3, 3]
+  ];
 
-  function distanceToPlayer(position) {
-    const player = game.player;
-    if (!player || !position) return Infinity;
-    const dx = player.position.x - position.x;
-    const dz = player.position.z - position.z;
-    return Math.hypot(dx, dz);
-  }
+  var CRUISER_COLORS = [0x1a3a6b, 0x14161a, 0xf0eee2];
+  var RAM_RANGE = 3.2;
+  var RAM_DAMAGE = 6;
+  var RAM_COOLDOWN = 1;
+  var RAM_SHOVE = 2.5;
+  var CRUISER_TURN = 2.2;
+  var CRUISER_SPEED_FAR = 16;
+  var CRUISER_SPEED_NEAR = 10;
+  var COP_FALL_SECONDS = 4;
+  var STILL_DISTANCE = 0.4;
+
+  var police = {
+    wanted: 0,
+    cruisers: [],
+    cops: [],
+    HEAT_STEAL: heatSteal,
+    HEAT_PUNCH: heatPunch,
+    HEAT_HIT_COP: heatHitCop,
+    addHeat: addHeat,
+    clearHeat: clearHeat,
+    damageCop: damageCop,
+    update: update
+  };
+
+  var decayTimer = 0;
+  var stillTimer = 0;
+  var lastX = null;
+  var lastZ = null;
 
   function emitWantedChanged() {
     if (game.events && typeof game.events.emit === 'function') {
-      game.events.emit('wantedChanged', { wanted });
+      game.events.emit('wantedChanged', { wanted: police.wanted });
     }
   }
 
@@ -56,396 +91,387 @@ export function createPolice(game) {
     }
   }
 
-  // How many cruisers and foot cops each wanted level fields: [cruisers, cops].
-  const ROSTER = [
-    [0, 0],
-    [1, 1],
-    [1, 2],
-    [2, 2],
-    [3, 3],
-    [3, 3],
-  ];
-
-  const CRUISER_COLORS = [0x1e3a8a, 0x111111, 0xf5f5f0];
-
-  let wanted = 0;
-  let decayTimer = 0;
-  let stillTimer = 0;
-  let lastX = null;
-  let lastZ = null;
-
-  const cruisers = [];
-  const cops = [];
-
-  function syncWanted() {
-    police.wanted = wanted;
-    game.wanted = wanted;
-  }
-
   function addHeat(stars) {
-    const before = wanted;
-    wanted = Math.min(maxStars, wanted + (stars || 0));
+    if (!stars) return;
+    var before = police.wanted;
+    police.wanted = Math.min(maxStars, police.wanted + stars);
     decayTimer = 0;
-    syncWanted();
-    if (wanted !== before) emitWantedChanged();
-    if (wanted >= 1) setSiren(true);
+    if (police.wanted !== before) {
+      emitWantedChanged();
+    }
+    if (police.wanted >= 1) {
+      setSiren(true);
+    }
+    game.wanted = police.wanted;
   }
 
   function clearHeat() {
-    wanted = 0;
+    police.wanted = 0;
     decayTimer = 0;
-    syncWanted();
     setSiren(false);
     emitWantedChanged();
+    game.wanted = police.wanted;
   }
 
   function damageCop(cop, damage) {
     if (!cop || cop.falling) return;
     cop.health -= damage;
-    if (cop.health <= 0) {
-      cop.falling = true;
-      cop.fallTimer = 4;
-      if (cop.mesh) cop.mesh.rotation.z = Math.PI / 2;
-      if (typeof game.message === 'function') game.message('Cop down!');
+    if (cop.health > 0) return;
+    cop.falling = true;
+    cop.fallTimer = COP_FALL_SECONDS;
+    // Tip the mesh over onto its side.
+    cop.mesh.rotation.z = Math.PI / 2;
+    if (typeof game.message === 'function') {
+      game.message('Cop down!');
     }
   }
 
   function buildCopMesh() {
-    const navy = new THREE.MeshLambertMaterial({ color: 0x1e3a6e });
-    const dark = new THREE.MeshLambertMaterial({ color: 0x141428 });
-    const skin = new THREE.MeshLambertMaterial({ color: 0xd9a066 });
-    const badge = new THREE.MeshLambertMaterial({ color: 0xffd700 });
+    var navy = 0x1e3a5f;
+    var vestDark = 0x222831;
+    var skin = 0xd9a066;
+    var capDark = 0x1a1d24;
+    var badgeYellow = 0xffd23f;
+    var legsDark = 0x232a35;
 
-    const mesh = new THREE.Group();
+    var group = new THREE.Group();
 
-    function makeLeg(side) {
-      const pivot = new THREE.Group();
-      pivot.position.set(0.13 * side, 0.52, 0);
-      const leg = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.52, 0.16), dark);
-      leg.position.y = -0.26;
-      pivot.add(leg);
-      return pivot;
-    }
+    var body = new THREE.Mesh(
+      new THREE.BoxGeometry(0.62, 0.8, 0.36),
+      new THREE.MeshLambertMaterial({ color: navy })
+    );
+    body.position.y = 1.05;
+    group.add(body);
 
-    function makeArm(side) {
-      const pivot = new THREE.Group();
-      pivot.position.set(0.32 * side, 1.08, 0);
-      const arm = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.5, 0.12), navy);
-      arm.position.y = -0.25;
-      pivot.add(arm);
-      return pivot;
-    }
+    var vest = new THREE.Mesh(
+      new THREE.BoxGeometry(0.66, 0.5, 0.4),
+      new THREE.MeshLambertMaterial({ color: vestDark })
+    );
+    vest.position.y = 1.12;
+    group.add(vest);
 
-    const legL = makeLeg(-1);
-    const legR = makeLeg(1);
-    const armL = makeArm(-1);
-    const armR = makeArm(1);
-    mesh.add(legL);
-    mesh.add(legR);
-    mesh.add(armL);
-    mesh.add(armR);
+    var head = new THREE.Mesh(
+      new THREE.BoxGeometry(0.34, 0.34, 0.34),
+      new THREE.MeshLambertMaterial({ color: skin })
+    );
+    head.position.y = 1.65;
+    group.add(head);
 
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.6, 0.28), navy);
-    body.position.y = 0.82;
-    mesh.add(body);
+    var cap = new THREE.Mesh(
+      new THREE.BoxGeometry(0.38, 0.12, 0.38),
+      new THREE.MeshLambertMaterial({ color: capDark })
+    );
+    cap.position.y = 1.86;
+    group.add(cap);
 
-    const vest = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.36, 0.32), dark);
-    vest.position.y = 0.88;
-    mesh.add(vest);
+    var badge = new THREE.Mesh(
+      new THREE.BoxGeometry(0.08, 0.1, 0.02),
+      new THREE.MeshLambertMaterial({ color: badgeYellow })
+    );
+    badge.position.set(-0.14, 1.25, 0.21);
+    group.add(badge);
 
-    const head = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.28, 0.28), skin);
-    head.position.y = 1.28;
-    mesh.add(head);
+    var legGeo = new THREE.BoxGeometry(0.22, 0.7, 0.22);
+    var legMat = new THREE.MeshLambertMaterial({ color: legsDark });
+    var legL = new THREE.Group();
+    legL.position.set(-0.16, 0.7, 0);
+    var legLMesh = new THREE.Mesh(legGeo, legMat);
+    legLMesh.position.y = -0.35;
+    legL.add(legLMesh);
+    group.add(legL);
+    var legR = new THREE.Group();
+    legR.position.set(0.16, 0.7, 0);
+    var legRMesh = new THREE.Mesh(legGeo, legMat);
+    legRMesh.position.y = -0.35;
+    legR.add(legRMesh);
+    group.add(legR);
 
-    const cap = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.1, 0.32), dark);
-    cap.position.y = 1.45;
-    mesh.add(cap);
-
-    const badgeMesh = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 0.02), badge);
-    badgeMesh.position.set(-0.14, 0.96, 0.17);
-    mesh.add(badgeMesh);
-
-    mesh.userData.legL = legL;
-    mesh.userData.legR = legR;
-    mesh.userData.armL = armL;
-    mesh.userData.armR = armR;
-    mesh.userData.swing = 0;
-    return mesh;
-  }
-
-  function spawnCop() {
-    const player = game.player;
-    if (!player || !game.scene) return;
-    const angle = randRange(0, Math.PI * 2);
-    const dist = randRange(14, 24);
-    let x = player.position.x + Math.sin(angle) * dist;
-    let z = player.position.z + Math.cos(angle) * dist;
-    if (game.world && typeof game.world.isBlocked === 'function' && game.world.isBlocked(x, z, 1)) {
-      x = player.position.x - Math.sin(angle) * dist;
-      z = player.position.z - Math.cos(angle) * dist;
-    }
-    const mesh = buildCopMesh();
-    mesh.position.set(x, 0, z);
-    mesh.rotation.y = randRange(0, Math.PI * 2);
-    game.scene.add(mesh);
-    cops.push({
-      mesh,
-      health: 100,
-      falling: false,
-      fallTimer: 0,
-      speed: randRange(4.2, 5.0),
-    });
+    group.userData.legL = legL;
+    group.userData.legR = legR;
+    return group;
   }
 
   function spawnCruiser() {
-    const player = game.player;
-    if (!player || !game.vehicles || typeof game.vehicles.spawn !== 'function') return false;
-    const angle = randRange(0, Math.PI * 2);
-    const dist = randRange(28, 45);
-    let x = player.position.x + Math.sin(angle) * dist;
-    let z = player.position.z + Math.cos(angle) * dist;
-    let heading = angle;
+    var player = game.player;
+    var vehicles = game.vehicles;
+    if (!player || !vehicles || typeof vehicles.spawn !== 'function') return null;
+    var angle = rng.range(0, Math.PI * 2);
+    var dist = rng.range(28, 45);
+    var x = player.position.x + Math.sin(angle) * dist;
+    var z = player.position.z + Math.cos(angle) * dist;
+    var heading = 0;
     if (game.world && typeof game.world.nearestRoadPoint === 'function') {
-      const road = game.world.nearestRoadPoint(x, z);
+      var road = game.world.nearestRoadPoint(x, z);
       if (road) {
         x = road.x;
         z = road.z;
         heading = road.heading;
       }
     }
-    const colour = randPick(CRUISER_COLORS);
-    let vehicle = null;
-    try {
-      vehicle = game.vehicles.spawn('cruiser', x, z, heading, colour);
-    } catch (err) {
-      vehicle = null;
-    }
-    if (!vehicle) return false;
-    cruisers.push({
-      vehicle,
+    var colour = rng.pick(CRUISER_COLORS);
+    var vehicle = vehicles.spawn('cruiser', x, z, heading, colour);
+    // If the vehicles system cannot provide one, the roster stays short.
+    if (!vehicle) return null;
+    var cruiser = {
+      vehicle: vehicle,
       speed: 0,
       ramTimer: 0,
-      wobble: randRange(0, Math.PI * 2),
-    });
-    return true;
+      wobble: rng.range(0, Math.PI * 2)
+    };
+    police.cruisers.push(cruiser);
+    return cruiser;
   }
 
-  function removeCruiser(cruiser) {
-    const vehicle = cruiser.vehicle;
-    if (!vehicle) return;
-    if (game.vehicles && typeof game.vehicles.despawn === 'function') {
-      try {
-        game.vehicles.despawn(vehicle);
-      } catch (err) {
-        // Fall through to removing the mesh directly.
-        if (game.scene && vehicle.mesh) game.scene.remove(vehicle.mesh);
+  function spawnCop() {
+    var player = game.player;
+    if (!player) return null;
+    var angle = rng.range(0, Math.PI * 2);
+    var dist = rng.range(14, 24);
+    var dx = Math.sin(angle) * dist;
+    var dz = Math.cos(angle) * dist;
+    var x = player.position.x + dx;
+    var z = player.position.z + dz;
+    // If the spot is blocked, move to the opposite side of the player.
+    if (game.world && typeof game.world.isBlocked === 'function' &&
+        game.world.isBlocked(x, z, 1)) {
+      x = player.position.x - dx;
+      z = player.position.z - dz;
+    }
+    var mesh = buildCopMesh();
+    mesh.position.set(x, 0, z);
+    mesh.rotation.y = angle;
+    if (scene) scene.add(mesh);
+    var cop = {
+      mesh: mesh,
+      health: 100,
+      falling: false,
+      fallTimer: 0,
+      speed: rng.range(4.2, 5.0)
+    };
+    police.cops.push(cop);
+    return cop;
+  }
+
+  function removeCruiser(index) {
+    var cruiser = police.cruisers[index];
+    if (!cruiser) return;
+    police.cruisers.splice(index, 1);
+    var vehicles = game.vehicles;
+    if (vehicles && typeof vehicles.despawn === 'function') {
+      vehicles.despawn(cruiser.vehicle);
+    } else {
+      if (scene && cruiser.vehicle && cruiser.vehicle.mesh) {
+        scene.remove(cruiser.vehicle.mesh);
       }
-      return;
-    }
-    if (game.scene && vehicle.mesh) game.scene.remove(vehicle.mesh);
-    if (game.vehicles && Array.isArray(game.vehicles.list)) {
-      const index = game.vehicles.list.indexOf(vehicle);
-      if (index >= 0) game.vehicles.list.splice(index, 1);
+      if (vehicles && vehicles.list) {
+        var at = vehicles.list.indexOf(cruiser.vehicle);
+        if (at !== -1) vehicles.list.splice(at, 1);
+      }
     }
   }
 
-  function removeCop(cop) {
-    if (game.scene && cop.mesh) game.scene.remove(cop.mesh);
+  function removeCop(index) {
+    var cop = police.cops[index];
+    if (!cop) return;
+    police.cops.splice(index, 1);
+    if (scene && cop.mesh) scene.remove(cop.mesh);
   }
 
-  function syncRoster() {
-    const target = ROSTER[Math.max(0, Math.min(maxStars, wanted))] || [0, 0];
-    while (cruisers.length < target[0]) {
+  function matchRoster() {
+    var level = Math.max(0, Math.min(maxStars, police.wanted));
+    var wantCruisers = ROSTER[level][0];
+    var wantCops = ROSTER[level][1];
+    while (police.cruisers.length < wantCruisers) {
       if (!spawnCruiser()) break;
     }
-    while (cruisers.length > target[0]) {
-      removeCruiser(cruisers.pop());
+    while (police.cruisers.length > wantCruisers) {
+      removeCruiser(police.cruisers.length - 1);
     }
-    while (cops.length < target[1]) spawnCop();
-    while (cops.length > target[1]) {
-      removeCop(cops.pop());
+    while (police.cops.length < wantCops) {
+      if (!spawnCop()) break;
     }
+    while (police.cops.length > wantCops) {
+      removeCop(police.cops.length - 1);
+    }
+  }
+
+  function angleTowards(current, target, maxStep) {
+    var diff = target - current;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    if (diff > maxStep) diff = maxStep;
+    if (diff < -maxStep) diff = -maxStep;
+    return current + diff;
+  }
+
+  function distanceToPlayer(pos) {
+    var player = game.player;
+    var dx = player.position.x - pos.x;
+    var dz = player.position.z - pos.z;
+    return Math.sqrt(dx * dx + dz * dz);
   }
 
   function updateCruisers(dt) {
-    const player = game.player;
-    if (!player) return;
-    const px = player.position.x;
-    const pz = player.position.z;
-    const time = game.time || 0;
-    for (const cruiser of cruisers) {
-      const vehicle = cruiser.vehicle;
-      if (!vehicle || !vehicle.position) continue;
-      const vx = vehicle.position.x;
-      const vz = vehicle.position.z;
-      const dx = px - vx;
-      const dz = pz - vz;
-      const dist = Math.hypot(dx, dz) || 0.001;
-
-      let desired = Math.atan2(dx, dz) + Math.sin(time * 1.5 + cruiser.wobble) * 0.1;
-      let turn = wrapAngle(desired - vehicle.heading);
-      const maxTurn = 2.2 * dt;
-      turn = Math.max(-maxTurn, Math.min(maxTurn, turn));
-      vehicle.heading = wrapAngle(vehicle.heading + turn);
-
-      const targetSpeed = dist > 12 ? 16 : 10;
-      cruiser.speed += (targetSpeed - cruiser.speed) * Math.min(1, dt * 2);
-
-      const aheadX = vehicle.position.x + Math.sin(vehicle.heading) * 4;
-      const aheadZ = vehicle.position.z + Math.cos(vehicle.heading) * 4;
-      if (game.world && typeof game.world.isBlocked === 'function' && game.world.isBlocked(aheadX, aheadZ, 2)) {
-        vehicle.heading = wrapAngle(vehicle.heading + Math.PI);
+    var player = game.player;
+    for (var i = 0; i < police.cruisers.length; i++) {
+      var cruiser = police.cruisers[i];
+      var vehicle = cruiser.vehicle;
+      if (!vehicle || !vehicle.mesh) continue;
+      var pos = vehicle.mesh.position;
+      var dx = player.position.x - pos.x;
+      var dz = player.position.z - pos.z;
+      var dist = Math.sqrt(dx * dx + dz * dz);
+      var desired = Math.atan2(dx, dz);
+      var wobble = Math.sin(game.time * 1.5 + cruiser.wobble) * 0.08;
+      vehicle.heading = angleTowards(
+        vehicle.heading, desired + wobble, CRUISER_TURN * dt);
+      var targetSpeed = dist > 12 ? CRUISER_SPEED_FAR : CRUISER_SPEED_NEAR;
+      // If the way ahead is blocked, swing around and halve speed.
+      var aheadX = pos.x + Math.sin(vehicle.heading) * 4;
+      var aheadZ = pos.z + Math.cos(vehicle.heading) * 4;
+      if (game.world && typeof game.world.isBlocked === 'function' &&
+          game.world.isBlocked(aheadX, aheadZ, 1)) {
+        vehicle.heading += Math.PI;
         cruiser.speed *= 0.5;
       }
-
-      vehicle.position.x += Math.sin(vehicle.heading) * cruiser.speed * dt;
-      vehicle.position.z += Math.cos(vehicle.heading) * cruiser.speed * dt;
+      cruiser.speed += (targetSpeed - cruiser.speed) * Math.min(1, dt * 2);
       vehicle.speed = cruiser.speed;
-      if (vehicle.mesh) vehicle.mesh.rotation.y = vehicle.heading;
-
-      cruiser.ramTimer -= dt;
-      const ndx = px - vehicle.position.x;
-      const ndz = pz - vehicle.position.z;
-      if (Math.hypot(ndx, ndz) < 3.2 && cruiser.ramTimer <= 0) {
-        cruiser.ramTimer = 1;
-        if (typeof player.takeDamage === 'function') player.takeDamage(6);
-        const car = player.car;
-        if (car && car.position) {
-          car.position.x += Math.sin(car.heading) * 2.5;
-          car.position.z += Math.cos(car.heading) * 2.5;
+      pos.x += Math.sin(vehicle.heading) * cruiser.speed * dt;
+      pos.z += Math.cos(vehicle.heading) * cruiser.speed * dt;
+      vehicle.mesh.rotation.y = vehicle.heading;
+      if (cruiser.ramTimer > 0) cruiser.ramTimer -= dt;
+      // Ram the player on contact, at most once a second.
+      if (dist < RAM_RANGE && cruiser.ramTimer <= 0) {
+        cruiser.ramTimer = RAM_COOLDOWN;
+        if (player.takeDamage) player.takeDamage(RAM_DAMAGE);
+        if (player.car && player.car.position) {
+          player.car.position.x += Math.sin(vehicle.heading) * RAM_SHOVE;
+          player.car.position.z += Math.cos(vehicle.heading) * RAM_SHOVE;
+          if (player.car.mesh) {
+            player.car.mesh.position.copy(player.car.position);
+          }
         }
-        if (game.audio && typeof game.audio.punch === 'function') game.audio.punch();
+        if (game.audio && typeof game.audio.punch === 'function') {
+          game.audio.punch();
+        }
       }
     }
   }
 
   function updateCops(dt) {
-    const player = game.player;
-    if (!player) return;
-    const px = player.position.x;
-    const pz = player.position.z;
-    for (let i = cops.length - 1; i >= 0; i--) {
-      const cop = cops[i];
+    var player = game.player;
+    for (var i = police.cops.length - 1; i >= 0; i--) {
+      var cop = police.cops[i];
       if (cop.falling) {
         cop.fallTimer -= dt;
-        if (cop.fallTimer <= 0) {
-          removeCop(cop);
-          cops.splice(i, 1);
-        }
+        if (cop.fallTimer <= 0) removeCop(i);
         continue;
       }
-      const mx = cop.mesh.position.x;
-      const mz = cop.mesh.position.z;
-      const dx = px - mx;
-      const dz = pz - mz;
-      const heading = Math.atan2(dx, dz);
+      var pos = cop.mesh.position;
+      var dx = player.position.x - pos.x;
+      var dz = player.position.z - pos.z;
+      var heading = Math.atan2(dx, dz);
       cop.mesh.rotation.y = heading;
-      cop.mesh.position.x += Math.sin(heading) * cop.speed * dt;
-      cop.mesh.position.z += Math.cos(heading) * cop.speed * dt;
-      const data = cop.mesh.userData || {};
-      data.swing = (data.swing || 0) + dt * cop.speed * 2.2;
-      const swing = Math.sin(data.swing) * 0.6;
-      if (data.legL) data.legL.rotation.x = swing;
-      if (data.legR) data.legR.rotation.x = -swing;
-      if (data.armL) data.armL.rotation.x = -swing * 0.8;
-      if (data.armR) data.armR.rotation.x = swing * 0.8;
+      pos.x += Math.sin(heading) * cop.speed * dt;
+      pos.z += Math.cos(heading) * cop.speed * dt;
+      var phase = game.time * 10;
+      var legL = cop.mesh.userData.legL;
+      var legR = cop.mesh.userData.legR;
+      if (legL) legL.rotation.x = Math.sin(phase) * 0.7;
+      if (legR) legR.rotation.x = -Math.sin(phase) * 0.7;
+    }
+  }
+
+  function updateArrest(dt) {
+    var player = game.player;
+    if (lastX === null) {
+      lastX = player.position.x;
+      lastZ = player.position.z;
+      stillTimer = 0;
+      return;
+    }
+    var moved = Math.sqrt(
+      (player.position.x - lastX) * (player.position.x - lastX) +
+      (player.position.z - lastZ) * (player.position.z - lastZ));
+    if (moved < STILL_DISTANCE) {
+      stillTimer += dt;
+    } else {
+      stillTimer = 0;
+      lastX = player.position.x;
+      lastZ = player.position.z;
+    }
+    if (stillTimer < arrestSeconds) return;
+    for (var i = 0; i < police.cops.length; i++) {
+      var cop = police.cops[i];
+      if (cop.falling) continue;
+      if (distanceToPlayer(cop.mesh.position) <= arrestRadius) {
+        clearHeat();
+        if (game.audio && typeof game.audio.busted === 'function') {
+          game.audio.busted();
+        }
+        if (game.events && typeof game.events.emit === 'function') {
+          game.events.emit('busted', {});
+        }
+        if (typeof game.setState === 'function') {
+          game.setState('busted');
+        }
+        stillTimer = 0;
+        return;
+      }
+    }
+  }
+
+  function updateDecay(dt) {
+    var nearest = Infinity;
+    for (var i = 0; i < police.cruisers.length; i++) {
+      var vehicle = police.cruisers[i].vehicle;
+      if (vehicle && vehicle.mesh) {
+        nearest = Math.min(nearest, distanceToPlayer(vehicle.mesh.position));
+      }
+    }
+    for (var j = 0; j < police.cops.length; j++) {
+      var cop = police.cops[j];
+      if (cop.falling) continue;
+      nearest = Math.min(nearest, distanceToPlayer(cop.mesh.position));
+    }
+    if (nearest > hiddenDistance) {
+      decayTimer += dt;
+      if (decayTimer >= decaySeconds && police.wanted > 0) {
+        police.wanted -= 1;
+        decayTimer = 0;
+        emitWantedChanged();
+        game.wanted = police.wanted;
+      }
+    } else {
+      decayTimer = 0;
     }
   }
 
   function update(dt) {
-    dt = dt || 0;
-    syncWanted();
-    if (game.state && game.state !== 'playing') return;
-    setSiren(wanted >= 1);
-    syncRoster();
+    // The police module owns the wanted level; publish it every frame.
+    game.wanted = police.wanted;
+    if (game.state !== 'playing') return;
+    if (!game.player || !game.player.position) return;
 
-    const player = game.player;
-    if (wanted === 0) {
+    setSiren(police.wanted >= 1);
+    matchRoster();
+
+    if (police.wanted === 0) {
+      // No heat: only the roster is kept in step, arrest tracking resets.
       stillTimer = 0;
+      lastX = null;
+      lastZ = null;
       decayTimer = 0;
-      if (player) {
-        lastX = player.position.x;
-        lastZ = player.position.z;
-      }
       return;
     }
-    if (!player) return;
 
     updateCruisers(dt);
     updateCops(dt);
-
-    // Arrest: standing almost still next to a standing cop for long enough.
-    const px = player.position.x;
-    const pz = player.position.z;
-    if (lastX === null || lastZ === null) {
-      lastX = px;
-      lastZ = pz;
-    }
-    const moved = Math.hypot(px - lastX, pz - lastZ);
-    if (moved < 0.4) {
-      stillTimer += dt;
-    } else {
-      stillTimer = 0;
-      lastX = px;
-      lastZ = pz;
-    }
-    if (stillTimer >= arrestSeconds) {
-      let nearCop = false;
-      for (const cop of cops) {
-        if (cop.falling) continue;
-        if (Math.hypot(cop.mesh.position.x - px, cop.mesh.position.z - pz) <= arrestRadius) {
-          nearCop = true;
-          break;
-        }
-      }
-      if (nearCop) {
-        clearHeat();
-        if (game.audio && typeof game.audio.busted === 'function') game.audio.busted();
-        if (game.events && typeof game.events.emit === 'function') game.events.emit('busted');
-        if (typeof game.setState === 'function') game.setState('busted');
-        return;
-      }
-    }
-
-    // Heat decay: no police nearby for long enough drops one star.
-    let nearest = Infinity;
-    for (const cruiser of cruisers) {
-      if (cruiser.vehicle && cruiser.vehicle.position) {
-        nearest = Math.min(nearest, distanceToPlayer(cruiser.vehicle.position));
-      }
-    }
-    for (const cop of cops) {
-      if (!cop.falling && cop.mesh) {
-        nearest = Math.min(nearest, distanceToPlayer(cop.mesh.position));
-      }
-    }
-    if (nearest > hiddenDistance) {
-      decayTimer += dt;
-      if (decayTimer >= decaySeconds) {
-        decayTimer = 0;
-        wanted = Math.max(0, wanted - 1);
-        syncWanted();
-        emitWantedChanged();
-        setSiren(wanted >= 1);
-      }
-    } else {
-      decayTimer = 0;
-    }
+    updateArrest(dt);
+    updateDecay(dt);
   }
 
-  const police = {
-    wanted: 0,
-    cruisers,
-    cops,
-    addHeat,
-    clearHeat,
-    damageCop,
-    update,
-    HEAT_STEAL: heatSteal,
-    HEAT_PUNCH: heatPunch,
-    HEAT_HIT_COP: heatHitCop,
-  };
-
-  game.wanted = 0;
   return police;
 }
+
+export { createPolice };

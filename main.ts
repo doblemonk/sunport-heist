@@ -40,3 +40,5 @@ const dossier = buildDossier(outputDir, {
 writeFileSync(join(outputDir, 'dossier.json'), dossier);
 
 // Sunport Heist entrypoint: copies game/ and screenshots/ to the output directory and writes dossier.json via the kit's dossier builder (vendor/makefun-game.ts).
+
+// Sunport Heist (make.fun gta6-01, re-write 4): this entrypoint copies game/ and screenshots/ into the output directory and writes dossier.json via buildDossier from the kit's makefun-game.ts.
