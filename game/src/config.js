@@ -1,82 +1,92 @@
-// Sunport Heist — shared tuning and city constants.
-// Every number the rest of the game reads lives here, so balancing the
-// chase, the traffic and the missions means editing one file.
-export const WORLD_W = 3600;
-export const WORLD_H = 2600;
-export const ROAD_W = 120;
-export const ROAD_HALF = ROAD_W / 2;
+// Sunport Heist — central tuning for the whole game.
+// One plain object, so every system reads the same numbers: the city size,
+// the districts, the cars, the wanted level, the missions and the pickups.
+// Nothing here touches the scene or the network; it is only data.
 
-// Road centrelines. The city is a grid; blocks between roads hold buildings.
-export const ROAD_X = [350, 850, 1350, 1850, 2350, 2850];
-export const ROAD_Y = [300, 750, 1200, 1650, 2100];
+export const CONFIG = {
+  // Deterministic world seed. Every system that needs chance uses this
+  // seed through the seeded generator in random.js, never unseeded chance.
+  seed: 1337,
 
-export const PLAYER = {
-  walkSpeed: 230,
-  runSpeed: 330,
-  radius: 14,
-  maxHealth: 100,
-  punchDamage: 25,
-  punchRange: 36,
-  punchCooldown: 0.35,
+  // The city runs from -worldSize to +worldSize on both X and Z.
+  worldSize: 420,
+
+  // Roads form a grid this far apart, in world units.
+  roadSpacing: 120,
+
+  // Five districts that tile the whole city without overlapping.
+  // North is negative Z (Z grows south), the beach is the west strip.
+  districts: [
+    { name: 'Palma Beach', kind: 'beach', x0: -420, z0: -420, x1: -240, z1: 420 },
+    { name: 'North Suburbs', kind: 'suburbs', x0: -240, z0: -420, x1: 420, z1: -180 },
+    { name: 'Downtown Solmar', kind: 'downtown', x0: -240, z0: -180, x1: 120, z1: 180 },
+    { name: 'Marina Hills', kind: 'marina', x0: 120, z0: -180, x1: 420, z1: 180 },
+    { name: 'Old Docks', kind: 'docks', x0: -240, z0: 180, x1: 420, z1: 420 },
+  ],
+
+  // Paint jobs for traffic and parked cars (hex colour numbers).
+  carColors: [
+    0xc0392b, 0x2e6fb7, 0x27ae60, 0xf1c40f, 0xecf0f1,
+    0x1c1c22, 0x7f8c8d, 0xe67e22, 0x8e44ad, 0x16a085,
+    0xd35400, 0x34495e, 0xbdc3c7, 0x9b59b6, 0x2ecc71,
+  ],
+
+  // On-foot movement, in metres per second.
+  playerWalkSpeed: 6,
+  playerRunSpeed: 10,
+
+  // Driving feel per vehicle class. topSpeed and reverseSpeed are in
+  // metres per second; acceleration and braking are metres per second
+  // squared; steering is radians per second at full lock.
+  carSpecs: {
+    sedan: { topSpeed: 34, acceleration: 14, braking: 30, reverseSpeed: 10, steering: 1.9 },
+    coupe: { topSpeed: 42, acceleration: 20, braking: 34, reverseSpeed: 11, steering: 2.2 },
+    taxi: { topSpeed: 33, acceleration: 13, braking: 30, reverseSpeed: 10, steering: 1.9 },
+    truck: { topSpeed: 26, acceleration: 9, braking: 22, reverseSpeed: 8, steering: 1.4 },
+    cruiser: { topSpeed: 40, acceleration: 18, braking: 32, reverseSpeed: 11, steering: 2.1 },
+  },
+
+  // Wanted level. Heat is added by crimes and drains away when the
+  // player stays out of trouble; standing still beside a cop gets you
+  // caught. Aliases repeat the same values under the shorter names
+  // other systems may use, so every reader agrees on the numbers.
+  wanted: {
+    maxStars: 5,
+    stealCarHeat: 1,
+    punchPedHeat: 1,
+    hitCopHeat: 1,
+    stealCar: 1,
+    punchPed: 1,
+    hitCop: 1,
+    decaySeconds: 20,
+    decayDelay: 20,
+    hiddenDistance: 40,
+    hideDistance: 40,
+    bustedStandSeconds: 3,
+    standStillSeconds: 3,
+    bustedRadius: 2,
+  },
+
+  // The six story jobs, in order. timeLimit is seconds; cash is the
+  // payout in dollars; ammo is the bullets handed over on completion.
+  missions: [
+    { name: 'First Delivery', timeLimit: 120, cash: 300, ammo: 12 },
+    { name: 'Hot Wheels', timeLimit: 180, cash: 500, ammo: 12 },
+    { name: 'Beach Pickup', timeLimit: 150, cash: 400, ammo: 12 },
+    { name: 'Getaway Driver', timeLimit: 180, cash: 600, ammo: 12 },
+    { name: 'Dock Heist', timeLimit: 240, cash: 1500, ammo: 12 },
+    { name: 'The Sunport Heist', timeLimit: 300, cash: 5000, ammo: 24 },
+  ],
+
+  // How many pedestrians and traffic cars the city starts with.
+  pedCount: 24,
+  trafficCount: 14,
+
+  // Street pickups: cash crates pay a random amount in this range,
+  // ammo crates always give this many bullets.
+  pickups: { cashMin: 25, cashMax: 100, ammo: 12 },
+
+  // The playable day runs from morning to dusk.
+  dayStartHour: 8,
+  dayEndHour: 19,
 };
-
-export const CAR = {
-  accel: 420,
-  brake: 700,
-  reverseAccel: 260,
-  maxSpeed: 560,
-  maxReverse: 180,
-  turnRate: 2.6,
-  radius: 20,
-};
-
-export const WANTED = {
-  max: 5,
-  decayDelay: 8,
-  decayStep: 5,
-  stealGain: 1,
-  assaultGain: 1,
-  killGain: 2,
-};
-
-export const DISTRICTS = [
-  { name: 'Palma Beach', x0: 0, y0: 0, x1: 620, y1: 2600, ground: '#e8c98a', label: '#b98d4f' },
-  { name: 'Downtown Solmar', x0: 620, y0: 0, x1: 2100, y1: 1350, ground: '#9aa38f', label: '#5c6656' },
-  { name: 'Old Docks', x0: 2100, y0: 1350, x1: 3600, y1: 2600, ground: '#8d8578', label: '#5f584c' },
-  { name: 'Marina Hills', x0: 620, y0: 1350, x1: 2100, y1: 2600, ground: '#a8b08a', label: '#6d7a52' },
-  { name: 'North Suburbs', x0: 2100, y0: 0, x1: 3600, y1: 1350, ground: '#a3b18a', label: '#67784f' },
-];
-
-export const CAR_COLORS = [
-  '#d94f3d', '#3d7bd9', '#e8b93c', '#4fb06a', '#8a5fd0',
-  '#e8e4da', '#2f3542', '#e07b39', '#39c0c8', '#c83d7a',
-];
-
-export const PED_COLORS = [
-  '#f2c14e', '#7ec8e3', '#e27d60', '#a3d9a5', '#d9a5e3',
-  '#f4f1ea', '#e8a13c', '#6a8caf',
-];
-
-// Starting spots the game reuses for missions, parking and spawns.
-export const SPOTS = {
-  hideout: { x: 1350, y: 1650, label: 'Hideout' },
-  beach: { x: 350, y: 1200, label: 'Palma Beach' },
-  downtown: { x: 1350, y: 750, label: 'Downtown' },
-  docks: { x: 2850, y: 2100, label: 'Old Docks' },
-  suburbs: { x: 2350, y: 300, label: 'North Suburbs' },
-  marina: { x: 850, y: 2100, label: 'Marina Hills' },
-};
-
-export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
-export const SAVE_KEY = 'sunport-heist.save.v1';
-
-export function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
-export function lerp(a, b, t) { return a + (b - a) * t; }
-export function dist(ax, ay, bx, by) { return Math.hypot(ax - bx, ay - by); }
-export function angleTo(ax, ay, bx, by) { return Math.atan2(by - ay, bx - ax); }
-export function angleDiff(a, b) {
-  let d = b - a;
-  while (d > Math.PI) d -= Math.PI * 2;
-  while (d < -Math.PI) d += Math.PI * 2;
-  return d;
-}

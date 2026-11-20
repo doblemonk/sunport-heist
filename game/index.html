@@ -1,25 +1,112 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sunport Heist — Open-World Crime in Solmar</title>
 <link rel="icon" href="data:,">
-<title>Sunport Heist — an open-world crime game in Solmar</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0e18; }
-  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-  #hud { position: fixed; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; }
-  /* Read aloud, never shown: the status line screen readers announce. */
-  #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #0b1220;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #f2f5f9; }
+  #game { position: fixed; inset: 0; }
+  #game canvas { display: block; }
+  .panel { background: rgba(8, 14, 26, 0.72); border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 10px; backdrop-filter: blur(3px); }
+  #hud { position: fixed; inset: 0; pointer-events: none; display: none; }
+  #hud.on { display: block; }
+  #hud-top { position: absolute; top: 14px; right: 16px; display: flex; gap: 10px; align-items: flex-start; }
+  .stat { padding: 8px 12px; font-weight: 700; font-size: 15px; white-space: nowrap; }
+  .stat small { display: block; font-size: 10px; letter-spacing: 0.14em; color: #9fb4d0; font-weight: 600; }
+  #hud-stars { color: #ffd166; letter-spacing: 2px; font-size: 18px; }
+  #hud-health { width: 170px; }
+  #hud-health-bar { height: 9px; background: rgba(255,255,255,0.16); border-radius: 5px; margin-top: 5px; overflow: hidden; }
+  #hud-health-fill { height: 100%; width: 100%; background: #37d67a; border-radius: 5px; }
+  #hud-health-num { float: right; }
+  #hud-clock { position: absolute; top: 14px; left: 16px; padding: 8px 12px; font-weight: 700; font-size: 15px; }
+  #hud-objective { position: absolute; top: 64px; left: 16px; max-width: 340px; padding: 10px 14px;
+    font-size: 14px; line-height: 1.45; }
+  #hud-objective b { color: #ffd166; }
+  #hud-timer { position: absolute; top: 64px; left: 368px; padding: 10px 14px;
+    font-size: 14px; font-weight: 700; }
+  #hud-timer:empty { display: none; }
+  #hud-banner { position: absolute; top: 22%; left: 50%; transform: translateX(-50%);
+    padding: 12px 22px; font-size: 20px; font-weight: 800; text-align: center; display: none; }
+  #hud-banner.on { display: block; }
+  #hud-hint { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+    padding: 7px 14px; font-size: 13px; color: #c8d6e8; white-space: nowrap; }
+  #minimap { position: absolute; bottom: 14px; right: 16px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.25); background: rgba(8, 14, 26, 0.8); }
+  .screen { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(5, 9, 18, 0.55); z-index: 10; }
+  .screen.on { display: flex; }
+  .card { max-width: 620px; margin: 20px; padding: 34px 40px; text-align: center; }
+  .card h1 { font-size: 52px; letter-spacing: 0.04em; color: #ffd166; margin-bottom: 6px; }
+  .card h2 { font-size: 30px; color: #ffd166; margin-bottom: 10px; }
+  .card p { font-size: 15px; line-height: 1.6; color: #dbe6f2; margin-bottom: 12px; }
+  .card .tag { color: #9fb4d0; font-size: 13px; letter-spacing: 0.2em; text-transform: uppercase; margin-bottom: 14px; }
+  .keys { font-size: 13px; line-height: 1.9; color: #c8d6e8; margin-bottom: 16px; }
+  .keys b { color: #fff; background: rgba(255,255,255,0.14); border-radius: 4px; padding: 1px 7px; }
+  .press { font-size: 17px; font-weight: 800; color: #ffd166; animation: pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+  /* Shot mode (?shot=): freeze the title prompt blink so captures are deterministic. */
+  .shot .press { animation: none; opacity: 1; }
 </style>
 </head>
 <body>
-<canvas id="game" aria-label="Sunport Heist: explore the city of Solmar on foot and by car, steal cars, outrun the police and run six story missions"></canvas>
-<canvas id="hud" aria-hidden="true"></canvas>
-<p id="status" role="status" aria-live="polite"></p>
-<script type="importmap">
-{ "imports": { "three": "./vendor/three.min.js" } }
-</script>
+<div id="game"></div>
+
+<div id="hud">
+  <div id="hud-clock" class="panel">08:00</div>
+  <div id="hud-top">
+    <div class="stat panel"><small>CASH</small><span id="hud-cash">$0</span></div>
+    <div class="stat panel" id="hud-health"><small>HEALTH <span id="hud-health-num">100</span></small>
+      <div id="hud-health-bar"><div id="hud-health-fill"></div></div></div>
+    <div class="stat panel"><small>AMMO</small><span id="hud-ammo">0</span></div>
+    <div class="stat panel"><small>WANTED</small><span id="hud-stars"></span></div>
+  </div>
+  <div id="hud-objective" class="panel">Welcome to Solmar.</div>
+  <div id="hud-timer" class="panel"></div>
+  <div id="hud-banner" class="panel"></div>
+  <div id="hud-hint" class="panel">WASD move &middot; Shift run &middot; E enter / exit car &middot; J punch &middot; Click shoot &middot; P pause &middot; F save &middot; M mute</div>
+  <canvas id="minimap" width="180" height="180"></canvas>
+</div>
+
+<div class="screen on" id="screen-title"><div class="card panel">
+  <div class="tag">A sun-soaked open-world crime game</div>
+  <h1>SUNPORT HEIST</h1>
+  <p>Rafi &ldquo;Reef&rdquo; Marlowe owes Lena Voss one last debt &mdash; and the only way to pay it
+  is to run the jobs nobody else in Solmar will touch. Steal cars, dodge the Solmar PD,
+  and pull off six jobs, from a first delivery to the Sunport vault itself.</p>
+  <div class="keys">
+    <b>W A S D</b> move / drive &nbsp; <b>Shift</b> run &nbsp; <b>E</b> enter / exit car<br>
+    <b>J</b> punch &nbsp; <b>Mouse</b> aim &amp; click to shoot &nbsp; <b>Space</b> handbrake<br>
+    <b>P</b> pause &nbsp; <b>F</b> save &nbsp; <b>M</b> mute &nbsp; <b>C</b> continue saved game
+  </div>
+  <div class="press">Press Enter to start</div>
+</div></div>
+
+<div class="screen" id="screen-pause"><div class="card panel">
+  <h2>PAUSED</h2>
+  <p>The city waits. Your wanted level, cash and jobs are right where you left them.</p>
+  <div class="press">Press Enter to continue</div>
+</div></div>
+
+<div class="screen" id="screen-busted"><div class="card panel">
+  <h2>BUSTED</h2>
+  <p>The Solmar PD caught up with Reef. You lose the smaller of $200 or ten percent of your cash,
+  and the current job starts over from the hideout.</p>
+  <div class="press">Press Enter to retry</div>
+</div></div>
+
+<div class="screen" id="screen-complete"><div class="card panel">
+  <h2>THE SUNPORT HEIST IS DONE</h2>
+  <p>Reef walks out of the vault with the score, the debt to Lena Voss is paid, and Solmar
+  is his again. Every job complete &mdash; legend of the coast.</p>
+  <div class="press">Press Enter to continue</div>
+</div></div>
+
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>

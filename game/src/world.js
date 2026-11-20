@@ -1,139 +1,365 @@
-// The city of Solmar: its road grid, its buildings, its beach and docks,
-// and the collision tests that keep people and cars out of the walls.
-// The 3D look lives in render3d.js, which reads the data built here.
-import { DISTRICTS, ROAD_HALF, ROAD_W, ROAD_X, ROAD_Y, WORLD_H, WORLD_W, clamp } from './config.js';
-import { pick, range } from './random.js';
+// Sunport Heist — the city of Solmar.
+// Builds the whole playable city into the scene from the config: ground
+// coloured by district, a road grid with markings and sidewalks,
+// low-poly buildings, the beach, the marina water, lamps, trees and
+// the sun. Collision is kept as plain rectangles, tested by isBlocked,
+// so driving, walking and the AI never need the meshes themselves.
 
-const ROOF_COLORS = ['#c96f4a', '#7a8ba0', '#b0a284', '#8a6f9e', '#5f8a6e', '#a85f5f', '#6e7f8a'];
-const CONTAINER_COLORS = ['#c94f3d', '#3d7bd9', '#e8b93c', '#4fb06a', '#8a5fd0'];
+import { CONFIG } from './config.js';
+import { createRNG } from './random.js';
 
-function roadAt(x, y) {
-  for (const rx of ROAD_X) if (Math.abs(x - rx) < ROAD_HALF) return true;
-  for (const ry of ROAD_Y) if (Math.abs(y - ry) < ROAD_HALF) return true;
-  return false;
-}
+const ROAD_WIDTH = 14;
+const SIDEWALK_WIDTH = 4;
 
-function onRoadX(x) {
-  for (const rx of ROAD_X) if (Math.abs(x - rx) < ROAD_HALF) return rx;
-  return null;
-}
+// Ground colours per district kind.
+const GROUND_COLORS = {
+  beach: 0xd9c08a,
+  downtown: 0x6a6f75,
+  docks: 0x7a7568,
+  marina: 0x7fae7a,
+  suburbs: 0x6fae62,
+};
 
-function onRoadY(y) {
-  for (const ry of ROAD_Y) if (Math.abs(y - ry) < ROAD_HALF) return ry;
-  return null;
-}
+// Building palettes per district kind.
+const BUILDING_COLORS = {
+  downtown: [0x8fa3b8, 0xb8a88f, 0x7d8ea3, 0xa3b8c9, 0x9a8f7d, 0xc9b8a3],
+  marina: [0xe8ddc9, 0xc9d6e8, 0xe8c9a3, 0xd6e8d6, 0xf0e8d8],
+  suburbs: [0xe8b8a3, 0xa3c9e8, 0xe8d6a3, 0xc9a3b8, 0xb8d6a3, 0xe8e8e8],
+  docks: [0xb8542e, 0x2e6fb7, 0x3a7d44, 0xc9a32e, 0x7a4a8a, 0x8a5a2e],
+  beach: [0xe8ddc9, 0xf0e8d8],
+};
 
-export function districtAt(x, y) {
-  for (const d of DISTRICTS) {
-    if (x >= d.x0 && x < d.x1 && y >= d.y0 && y < d.y1) return d;
+export function createWorld(game) {
+  const THREE = game.THREE;
+  const scene = game.scene;
+  const rng = game.rng || createRNG(CONFIG.seed);
+  const half = CONFIG.worldSize;
+  const spacing = CONFIG.roadSpacing;
+  const districts = CONFIG.districts;
+
+  // Road centrelines, in world units, on both axes.
+  const roadLines = [];
+  for (let v = -half + 60; v <= half - 60; v += spacing) roadLines.push(v);
+
+  const colliders = [];
+  function addCollider(cx, cz, w, d) {
+    colliders.push({ x0: cx - w / 2, z0: cz - d / 2, x1: cx + w / 2, z1: cz + d / 2 });
   }
-  return DISTRICTS[1];
-}
 
-export function createWorld(random) {
-  const buildings = [];
-  const trees = [];
-  const containers = [];
-  const beachUmbrellas = [];
+  function districtAt(x, z) {
+    for (const d of districts) {
+      if (x >= d.x0 && x < d.x1 && z >= d.z0 && z < d.z1) return d;
+    }
+    return districts[0];
+  }
 
-  // Buildings fill every block between roads, leaving a sidewalk margin.
-  const xs = [0, ...ROAD_X, WORLD_W];
-  const ys = [0, ...ROAD_Y, WORLD_H];
-  for (let bi = 0; bi < xs.length - 1; bi += 1) {
-    for (let bj = 0; bj < ys.length - 1; bj += 1) {
-      const x0 = xs[bi] + ROAD_HALF + 14;
-      const x1 = xs[bi + 1] - ROAD_HALF - 14;
-      const y0 = ys[bj] + ROAD_HALF + 14;
-      const y1 = ys[bj + 1] - ROAD_HALF - 14;
-      if (x1 - x0 < 90 || y1 - y0 < 90) continue;
-      // The beach strip stays open sand; the docks stay a container yard.
-      if (x0 < 620) continue;
-      if (x0 > 2400 && y0 > 1500) continue;
-      const count = 1 + Math.floor(random() * 3);
-      for (let k = 0; k < count; k += 1) {
-        const w = range(random, 90, Math.min(220, x1 - x0));
-        const h = range(random, 80, Math.min(190, y1 - y0));
-        const x = range(random, x0, Math.max(x0 + 1, x1 - w));
-        const y = range(random, y0, Math.max(y0 + 1, y1 - h));
-        buildings.push({
-          x, y, w, h,
-          color: pick(random, ROOF_COLORS),
-          tall: random() < 0.3,
-          windows: 2 + Math.floor(random() * 4),
-        });
-      }
-      // A tree or two per block, kept off the roads.
-      for (let k = 0; k < 2; k += 1) {
-        trees.push({ x: range(random, x0, x1), y: range(random, y0, y1), r: range(random, 10, 16) });
+  function flat(color, x, z, w, d, y) {
+    const mesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(w, d),
+      new THREE.MeshLambertMaterial({ color }),
+    );
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set(x, y, z);
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+    return mesh;
+  }
+
+  // ---- Ground: grass everywhere, then a tinted slab per district. ----
+  flat(0x5d9e52, 0, 0, half * 2, half * 2, 0);
+  for (const d of districts) {
+    const cx = (d.x0 + d.x1) / 2;
+    const cz = (d.z0 + d.z1) / 2;
+    flat(GROUND_COLORS[d.kind] || 0x6fae62, cx, cz, d.x1 - d.x0, d.z1 - d.z0, 0.01);
+  }
+
+  // ---- Roads, sidewalks and lane markings. ----
+  for (const v of roadLines) {
+    flat(0x2f3338, v, 0, ROAD_WIDTH, half * 2, 0.03); // north-south road
+    flat(0x2f3338, 0, v, half * 2, ROAD_WIDTH, 0.03); // east-west road
+    const sw = ROAD_WIDTH / 2 + SIDEWALK_WIDTH / 2;
+    flat(0x9aa0a6, v - sw, 0, SIDEWALK_WIDTH, half * 2, 0.02);
+    flat(0x9aa0a6, v + sw, 0, SIDEWALK_WIDTH, half * 2, 0.02);
+    flat(0x9aa0a6, 0, v - sw, half * 2, SIDEWALK_WIDTH, 0.02);
+    flat(0x9aa0a6, 0, v + sw, half * 2, SIDEWALK_WIDTH, 0.02);
+  }
+
+  // Centre dashes as one instanced mesh, skipping road crossings.
+  const dashGeo = new THREE.PlaneGeometry(0.35, 5);
+  const dashMat = new THREE.MeshBasicMaterial({ color: 0xf5d76e });
+  const dashSpots = [];
+  for (const v of roadLines) {
+    for (let s = -half + 20; s <= half - 20; s += 16) {
+      const nearCrossing = roadLines.some((c) => Math.abs(s - c) < 12);
+      if (nearCrossing) continue;
+      dashSpots.push({ x: v, z: s, vertical: true });
+      dashSpots.push({ x: s, z: v, vertical: false });
+    }
+  }
+  const dashes = new THREE.InstancedMesh(dashGeo, dashMat, dashSpots.length);
+  const dummy = new THREE.Object3D();
+  dashSpots.forEach((spot, i) => {
+    dummy.position.set(spot.x, 0.05, spot.z);
+    dummy.rotation.set(-Math.PI / 2, 0, spot.vertical ? 0 : Math.PI / 2);
+    dummy.updateMatrix();
+    dashes.setMatrixAt(i, dummy.matrix);
+  });
+  dashes.instanceMatrix.needsUpdate = true;
+  scene.add(dashes);
+
+  // ---- Buildings, one or two per city block, never on a road. ----
+  const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+  const blockCentres = [-300, -180, -60, 60, 180, 300];
+  const roofMat = new THREE.MeshLambertMaterial({ color: 0x3a3f45 });
+
+  for (const bx of blockCentres) {
+    for (const bz of blockCentres) {
+      const district = districtAt(bx, bz);
+      // The beach gets umbrellas, not buildings; the marina's east
+      // blocks are open water.
+      if (district.kind === 'beach') continue;
+      if (district.kind === 'marina' && bx >= 300 && bz >= -180 && bz <= 60) continue;
+
+      const palette = BUILDING_COLORS[district.kind] || BUILDING_COLORS.suburbs;
+      const count = district.kind === 'docks' || district.kind === 'suburbs' ? 2 : 1;
+      for (let k = 0; k < count; k++) {
+        const jx = k === 0 ? -14 : 16;
+        const jz = k === 0 ? -10 : 14;
+        const cx = bx + jx + rng.range(-6, 6);
+        const cz = bz + jz + rng.range(-6, 6);
+        let w, d, h;
+        if (district.kind === 'downtown') {
+          w = rng.range(28, 44); d = rng.range(28, 44); h = rng.range(26, 78);
+        } else if (district.kind === 'marina') {
+          w = rng.range(24, 38); d = rng.range(24, 38); h = rng.range(12, 30);
+        } else if (district.kind === 'docks') {
+          // Stacked shipping containers.
+          w = rng.range(18, 26); d = rng.range(10, 14); h = rng.range(4, 9);
+        } else {
+          w = rng.range(16, 26); d = rng.range(16, 26); h = rng.range(6, 12);
+        }
+        const mat = new THREE.MeshLambertMaterial({ color: rng.pick(palette) });
+        const building = new THREE.Mesh(boxGeo, mat);
+        building.scale.set(w, h, d);
+        building.position.set(cx, h / 2, cz);
+        building.castShadow = true;
+        building.receiveShadow = true;
+        scene.add(building);
+        // A thin darker roof slab, so blocks read as buildings from above.
+        const roof = new THREE.Mesh(boxGeo, roofMat);
+        roof.scale.set(w * 0.92, 1, d * 0.92);
+        roof.position.set(cx, h + 0.5, cz);
+        scene.add(roof);
+        addCollider(cx, cz, w + 1, d + 1);
       }
     }
   }
 
-  // Container yard in the Old Docks, kept off the roads that cross it.
-  let placed = 0;
-  let tries = 0;
-  while (placed < 26 && tries < 200) {
-    tries += 1;
-    const cx = range(random, 2450, 3350);
-    const cy = range(random, 1650, 2450);
-    if (roadAt(cx, cy)) continue;
-    containers.push({
-      x: cx,
-      y: cy,
-      w: 110, h: 34,
-      color: pick(random, CONTAINER_COLORS),
-      angle: random() < 0.5 ? 0 : Math.PI / 2,
-    });
-    placed += 1;
+  // ---- Palma Beach: umbrellas and a lifeguard tower. ----
+  const umbrellaMat = new THREE.MeshLambertMaterial({ color: 0xe85d3d });
+  const umbrellaMat2 = new THREE.MeshLambertMaterial({ color: 0x2e9db7 });
+  const poleMat = new THREE.MeshLambertMaterial({ color: 0x8a7a5a });
+  for (let i = 0; i < 12; i++) {
+    const ux = -390 + rng.range(0, 120);
+    const uz = -360 + i * 62 + rng.range(-14, 14);
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 3.4, 6), poleMat);
+    pole.position.set(ux, 1.7, uz);
+    scene.add(pole);
+    const top = new THREE.Mesh(
+      new THREE.ConeGeometry(3.2, 1.4, 8),
+      i % 2 === 0 ? umbrellaMat : umbrellaMat2,
+    );
+    top.position.set(ux, 4, uz);
+    top.castShadow = true;
+    scene.add(top);
   }
+  const tower = new THREE.Mesh(boxGeo, new THREE.MeshLambertMaterial({ color: 0xf0e8d8 }));
+  tower.scale.set(4, 7, 4);
+  tower.position.set(-330, 3.5, 0);
+  tower.castShadow = true;
+  scene.add(tower);
+  addCollider(-330, 0, 5, 5);
 
-  // Beach umbrellas along the Palma shore.
-  for (let i = 0; i < 14; i += 1) {
-    beachUmbrellas.push({ x: range(random, 90, 480), y: range(random, 120, 2480) });
+  // ---- Marina water, piers and moored boats. ----
+  const waterMat = new THREE.MeshLambertMaterial({
+    color: 0x2a7fb8, transparent: true, opacity: 0.92,
+  });
+  const water = new THREE.Mesh(new THREE.PlaneGeometry(120, 240), waterMat);
+  water.rotation.x = -Math.PI / 2;
+  water.position.set(360, 0.06, -60);
+  water.receiveShadow = true;
+  scene.add(water);
+  const pierMat = new THREE.MeshLambertMaterial({ color: 0x8a6a45 });
+  for (const pz of [-120, 0]) {
+    const pier = new THREE.Mesh(boxGeo, pierMat);
+    pier.scale.set(46, 1, 6);
+    pier.position.set(322, 0.6, pz);
+    pier.castShadow = true;
+    scene.add(pier);
   }
+  const boatMat = new THREE.MeshLambertMaterial({ color: 0xe8e8e8 });
+  const boatMat2 = new THREE.MeshLambertMaterial({ color: 0xc0392b });
+  [[350, -140], [375, -40], [350, 20]].forEach(([bx, bz], i) => {
+    const boat = new THREE.Mesh(boxGeo, i % 2 === 0 ? boatMat : boatMat2);
+    boat.scale.set(10, 2.5, 4);
+    boat.position.set(bx, 0.6, bz);
+    boat.rotation.y = rng.range(-0.3, 0.3);
+    scene.add(boat);
+  });
 
-  function collides(x, y, radius) {
-    if (x < radius || y < radius || x > WORLD_W - radius || y > WORLD_H - radius) return true;
-    for (const b of buildings) {
-      if (x + radius > b.x && x - radius < b.x + b.w && y + radius > b.y && y - radius < b.y + b.h) return true;
+  // ---- Street lamps at the road crossings. ----
+  const lampPoleMat = new THREE.MeshLambertMaterial({ color: 0x2c2f33 });
+  const lampHeadMat = new THREE.MeshBasicMaterial({ color: 0xffe9a3 });
+  for (const vx of roadLines) {
+    for (const vz of roadLines) {
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.2, 7, 6), lampPoleMat);
+      pole.position.set(vx + 9, 3.5, vz + 9);
+      scene.add(pole);
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.55, 8, 6), lampHeadMat);
+      head.position.set(vx + 9, 7.1, vz + 9);
+      scene.add(head);
     }
-    for (const c of containers) {
-      const hw = c.angle === 0 ? c.w / 2 : c.h / 2;
-      const hh = c.angle === 0 ? c.h / 2 : c.w / 2;
-      if (x + radius > c.x - hw && x - radius < c.x + hw && y + radius > c.y - hh && y - radius < c.y + hh) return true;
+  }
+
+  // ---- Trees, mostly in the suburbs and along the beach. ----
+  const trunkMat = new THREE.MeshLambertMaterial({ color: 0x6a4a2e });
+  const leafMat = new THREE.MeshLambertMaterial({ color: 0x2e7d32 });
+  const leafMat2 = new THREE.MeshLambertMaterial({ color: 0x43a047 });
+  for (let i = 0; i < 42; i++) {
+    const tx = rng.range(-380, 380);
+    const tz = rng.range(-380, 380);
+    if (onRoad(tx, tz)) continue;
+    const district = districtAt(tx, tz);
+    if (district.kind === 'downtown' || district.kind === 'docks') continue;
+    if (isBlocked(tx, tz, 3)) continue;
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.45, 3, 6), trunkMat);
+    trunk.position.set(tx, 1.5, tz);
+    trunk.castShadow = true;
+    scene.add(trunk);
+    const leaves = new THREE.Mesh(
+      new THREE.SphereGeometry(rng.range(2.2, 3.4), 8, 6),
+      i % 2 === 0 ? leafMat : leafMat2,
+    );
+    leaves.position.set(tx, 4.6, tz);
+    leaves.castShadow = true;
+    scene.add(leaves);
+    addCollider(tx, tz, 1.2, 1.2);
+  }
+
+  // ---- Light, sky and fog. ----
+  const sun = new THREE.DirectionalLight(0xfff2d8, 1.2);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.left = -460;
+  sun.shadow.camera.right = 460;
+  sun.shadow.camera.top = 460;
+  sun.shadow.camera.bottom = -460;
+  sun.shadow.camera.far = 1200;
+  scene.add(sun);
+  scene.add(sun.target);
+  const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x8a7a5a, 0.7);
+  scene.add(hemi);
+  scene.fog = new THREE.Fog(0x9fc3e0, 260, 950);
+  scene.background = new THREE.Color(0x87bfe8);
+
+  const morningSun = new THREE.Color(0xffd9a0);
+  const noonSun = new THREE.Color(0xfff6e0);
+  const duskSun = new THREE.Color(0xff8a4a);
+  const morningSky = new THREE.Color(0x9cc3e0);
+  const noonSky = new THREE.Color(0x7ec0ee);
+  const duskSky = new THREE.Color(0xf2a35e);
+
+  function setTimeOfDay(hours) {
+    const h = Math.max(0, Math.min(24, hours));
+    const p = Math.max(0, Math.min(1, (h - CONFIG.dayStartHour) / (CONFIG.dayEndHour - CONFIG.dayStartHour)));
+    const angle = Math.PI * p;
+    sun.position.set(Math.cos(angle) * 380, 120 + Math.sin(angle) * 260, 140);
+    const sunColor = new THREE.Color();
+    const skyColor = new THREE.Color();
+    if (p < 0.5) {
+      sunColor.lerpColors(morningSun, noonSun, p * 2);
+      skyColor.lerpColors(morningSky, noonSky, p * 2);
+    } else {
+      sunColor.lerpColors(noonSun, duskSun, (p - 0.5) * 2);
+      skyColor.lerpColors(noonSky, duskSky, (p - 0.5) * 2);
+    }
+    sun.color.copy(sunColor);
+    sun.intensity = 0.9 + Math.sin(angle) * 0.5;
+    hemi.intensity = 0.55 + Math.sin(angle) * 0.25;
+    scene.background.copy(skyColor);
+    if (scene.fog) scene.fog.color.copy(skyColor);
+  }
+  setTimeOfDay(CONFIG.dayStartHour);
+
+  // ---- Queries used by the player, traffic, peds and missions. ----
+  function nearestLine(value) {
+    let best = roadLines[0];
+    let bestDist = Math.abs(value - best);
+    for (const line of roadLines) {
+      const dist = Math.abs(value - line);
+      if (dist < bestDist) { best = line; bestDist = dist; }
+    }
+    return { line: best, dist: bestDist };
+  }
+
+  function isBlocked(x, z, radius) {
+    const r = radius || 0;
+    if (x - r < -half || x + r > half || z - r < -half || z + r > half) return true;
+    for (const c of colliders) {
+      if (x + r > c.x0 && x - r < c.x1 && z + r > c.z0 && z - r < c.z1) return true;
     }
     return false;
   }
 
-  // Slide along a wall instead of sticking: try the full step, then each axis alone.
-  function moveWithCollision(x, y, dx, dy, radius) {
-    if (!collides(x + dx, y + dy, radius)) return { x: x + dx, y: y + dy, hit: false };
-    if (!collides(x + dx, y, radius)) return { x: x + dx, y, hit: true };
-    if (!collides(x, y + dy, radius)) return { x, y: y + dy, hit: true };
-    return { x, y, hit: true };
+  function onRoad(x, z) {
+    const dx = nearestLine(x).dist;
+    const dz = nearestLine(z).dist;
+    return Math.min(dx, dz) <= ROAD_WIDTH / 2 + 2;
   }
 
-  function nearestRoadPoint(x, y) {
-    let best = null;
-    let bestD = Infinity;
-    for (const rx of ROAD_X) {
-      const d = Math.abs(x - rx);
-      if (d < bestD) { bestD = d; best = { x: rx, y, axis: 'v' }; }
+  function nearestRoadPoint(x, z) {
+    const nx = nearestLine(x);
+    const nz = nearestLine(z);
+    if (nx.dist <= nz.dist) {
+      // Snap onto the north-south road: drive along Z, heading 0 (+Z).
+      return { x: nx.line, z, heading: 0 };
     }
-    for (const ry of ROAD_Y) {
-      const d = Math.abs(y - ry);
-      if (d < bestD) { bestD = d; best = { x, y: ry, axis: 'h' }; }
-    }
-    return best;
+    // Snap onto the east-west road: drive along X, heading PI/2 (+X).
+    return { x, z: nz.line, heading: Math.PI / 2 };
   }
+
+  // Named spawn points, all on roads or open ground in their district.
+  const spawnPoints = {
+    hideout: { x: 0, z: 0, heading: 0 },
+    marina: { x: 240, z: -60, heading: Math.PI / 2 },
+    docks: { x: 0, z: 300, heading: 0 },
+    beach: { x: -360, z: 0, heading: Math.PI / 2 },
+    suburbs: { x: 120, z: -300, heading: 0 },
+    downtown: { x: 120, z: 120, heading: Math.PI },
+    vault: { x: 0, z: -120, heading: Math.PI / 2 },
+    beachDrops: [
+      { x: -360, z: -240, heading: 0 },
+      { x: -360, z: 0, heading: 0 },
+      { x: -360, z: 240, heading: 0 },
+    ],
+    goldCoupe: { x: 240, z: 120, heading: Math.PI / 2 },
+    cashCrate: { x: -120, z: 240, heading: 0 },
+  };
 
   return {
-    buildings, trees, containers, beachUmbrellas,
-    collides, moveWithCollision, nearestRoadPoint,
-    roadAt, onRoadX, onRoadY, districtAt,
-  };
-}
+    bounds: { minX: -half, maxX: half, minZ: -half, maxZ: half },
+    districts,
+    colliders,
+    isBlocked,
+    onRoad,
+    nearestRoadPoint,
+    spawnPoints,
+    setTimeOfDay,
 
-export function clampToWorld(x, y) {
-  return { x: clamp(x, 20, WORLD_W - 20), y: clamp(y, 20, WORLD_H - 20) };
+    // Only the water moves: a slow swell under the boats and piers.
+    update(dt) {
+      const t = game.time || 0;
+      water.position.y = 0.06 + Math.sin(t * 0.7) * 0.04;
+    },
+  };
 }

@@ -1,96 +1,98 @@
-// Keyboard and mouse input. Held keys give movement and driving; one-shot
-// presses (enter a car, punch, shoot, pause, start a mission) are queued as
-// bit flags and taken once by the loop, so a press between two frames is
-// never lost and never counted twice.
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
-export const ACTION_ENTER_CAR = 4;
-export const ACTION_PUNCH = 8;
-export const ACTION_SHOOT = 16;
-export const ACTION_MUTE = 32;
-export const ACTION_SAVE = 64;
+// Sunport Heist — keyboard and mouse input.
+// Listens on the window and keeps three kinds of state: keys held down
+// right now, keys that went down on this exact frame, and the mouse.
+// The main loop calls postUpdate after every frame's updates, which
+// clears the per-frame state so pressed() and clicked() are true for
+// exactly one frame.
 
-const UP = new Set(['ArrowUp', 'KeyW']);
-const DOWN = new Set(['ArrowDown', 'KeyS']);
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
-const ENTER_CAR = new Set(['KeyE']);
-const PUNCH = new Set(['KeyJ']);
-const SHOOT = new Set(['KeyK']);
-const MUTE = new Set(['KeyM']);
-const SAVE = new Set(['KeyF']);
+const GAME_KEYS = new Set([
+  'KeyW', 'KeyA', 'KeyS', 'KeyD',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+  'Space', 'ShiftLeft', 'ShiftRight',
+  'KeyE', 'KeyF', 'KeyJ', 'KeyK', 'KeyP', 'KeyM', 'KeyC',
+  'Enter', 'Escape', 'Tab',
+]);
 
-export function createInput(canvas) {
+export function createInput(game) {
   const held = new Set();
-  let actions = 0;
-  let mouseX = 0;
-  let mouseY = 0;
-  let mouseDown = false;
+  const pressedSet = new Set();
 
-  window.addEventListener('keydown', (event) => {
-    if (UP.has(event.code) || DOWN.has(event.code) || LEFT.has(event.code) || RIGHT.has(event.code)) {
-      held.add(event.code);
-      event.preventDefault();
-      return;
-    }
-    if (event.repeat) return;
-    if (CONFIRM.has(event.code)) actions |= ACTION_CONFIRM;
-    else if (PAUSE.has(event.code)) actions |= ACTION_PAUSE;
-    else if (ENTER_CAR.has(event.code)) actions |= ACTION_ENTER_CAR;
-    else if (PUNCH.has(event.code)) actions |= ACTION_PUNCH;
-    else if (SHOOT.has(event.code)) actions |= ACTION_SHOOT;
-    else if (MUTE.has(event.code)) actions |= ACTION_MUTE;
-    else if (SAVE.has(event.code)) actions |= ACTION_SAVE;
-    else return;
-    event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => {
-    held.delete(event.code);
-  });
-  window.addEventListener('blur', () => {
-    held.clear();
-    mouseDown = false;
-  });
-  canvas.addEventListener('pointermove', (event) => {
-    const rect = canvas.getBoundingClientRect();
-    mouseX = event.clientX - rect.left;
-    mouseY = event.clientY - rect.top;
-  });
-  canvas.addEventListener('pointerdown', (event) => {
-    const rect = canvas.getBoundingClientRect();
-    mouseX = event.clientX - rect.left;
-    mouseY = event.clientY - rect.top;
-    mouseDown = true;
-    actions |= ACTION_CONFIRM;
-  });
-  window.addEventListener('pointerup', () => { mouseDown = false; });
+  const mouse = { x: 0, y: 0, down: false, clicked: false };
 
-  function has(set) {
-    for (const code of set) if (held.has(code)) return true;
-    return false;
+  function canvasRect() {
+    const canvas = game && game.renderer && game.renderer.domElement;
+    if (canvas && canvas.getBoundingClientRect) return canvas.getBoundingClientRect();
+    return null;
   }
 
+  function onKeyDown(event) {
+    // Keep the page from scrolling or tabbing away while playing.
+    if (GAME_KEYS.has(event.code)) event.preventDefault();
+    if (!event.repeat) pressedSet.add(event.code);
+    held.add(event.code);
+  }
+
+  function onKeyUp(event) {
+    held.delete(event.code);
+  }
+
+  function onMouseMove(event) {
+    const rect = canvasRect();
+    if (rect) {
+      mouse.x = event.clientX - rect.left;
+      mouse.y = event.clientY - rect.top;
+    } else {
+      mouse.x = event.clientX;
+      mouse.y = event.clientY;
+    }
+  }
+
+  function onMouseDown(event) {
+    onMouseMove(event);
+    if (!mouse.down) mouse.clicked = true;
+    mouse.down = true;
+  }
+
+  function onMouseUp() {
+    mouse.down = false;
+  }
+
+  function onBlur() {
+    // A lost window must never leave a key stuck down.
+    held.clear();
+    mouse.down = false;
+  }
+
+  window.addEventListener('keydown', onKeyDown);
+  window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('mousemove', onMouseMove);
+  window.addEventListener('mousedown', onMouseDown);
+  window.addEventListener('mouseup', onMouseUp);
+  window.addEventListener('blur', onBlur);
+
   return {
-    // Movement vector, normalised, from WASD or the arrow keys.
-    move() {
-      const x = (has(RIGHT) ? 1 : 0) - (has(LEFT) ? 1 : 0);
-      const y = (has(DOWN) ? 1 : 0) - (has(UP) ? 1 : 0);
-      const len = Math.hypot(x, y);
-      if (len === 0) return { x: 0, y: 0 };
-      return { x: x / len, y: y / len };
+    mouse,
+
+    // True while the key with this KeyboardEvent.code is held.
+    down(code) {
+      return held.has(code);
     },
-    up: () => has(UP),
-    down: () => has(DOWN),
-    left: () => has(LEFT),
-    right: () => has(RIGHT),
-    run: () => held.has('ShiftLeft') || held.has('ShiftRight'),
-    mouse() { return { x: mouseX, y: mouseY, down: mouseDown }; },
-    takeActions() {
-      const taken = actions;
-      actions = 0;
-      return taken;
+
+    // True only on the frame the key went down.
+    pressed(code) {
+      return pressedSet.has(code);
+    },
+
+    // True if any key went down on this frame.
+    get anyKey() {
+      return pressedSet.size > 0;
+    },
+
+    // Called by the main loop after all updates each frame: clears the
+    // per-frame pressed set and the mouse click flag.
+    postUpdate() {
+      pressedSet.clear();
+      mouse.clicked = false;
     },
   };
 }

@@ -1,84 +1,268 @@
-// Pedestrians: Solmar's walkers. They stroll the sidewalks, cross at the
-// lights, chat in pairs on the beach, and run when they hear a gunshot or
-// see a car coming at them. A few carry cash; shoving one is a crime, and
-// the city notices.
-import { PED_COLORS, WORLD_H, WORLD_W, dist } from './config.js';
-import { pick, range } from './random.js';
+import * as THREE from '../vendor/three.min.js';
 
-const PED_COUNT = 42;
+// Solmar walkers: low-poly people strolling the sidewalks, turning at
+// intersections, fleeing gunshots and fast cars, and falling down when
+// punched or shot. They never raise the wanted level themselves — combat
+// calls knockDown when it hits one.
 
-export function createPedestrians(random, world) {
-  const peds = [];
-  for (let i = 0; i < PED_COUNT; i += 1) {
-    const spot = world.nearestRoadPoint(150 + random() * 3300, 150 + random() * 2300);
-    const x = spot.x + range(random, -90, 90);
-    const y = spot.y + range(random, -90, 90);
-    peds.push({
-      x, y,
-      angle: random() * Math.PI * 2,
-      speed: range(random, 40, 80),
-      color: pick(random, PED_COLORS),
-      state: 'walk',
-      panic: 0,
-      targetX: x,
-      targetY: y,
-      retarget: random() * 4,
-      down: false,
-      downTimer: 0,
-      cash: Math.floor(range(random, 5, 60)),
+const SHIRTS = [0xc0392b, 0x2e6f8e, 0x27ae60, 0xf39c12, 0x8e44ad, 0xe0e0e0, 0x16a085, 0xd35400];
+const PANTS = [0x2b3242, 0x3b2f2f, 0x1f3a2d, 0x444444];
+const SKINS = [0xd9a066, 0xc98d5a, 0x8d5524, 0xe8b98a, 0x6b4423];
+
+function rngFloat(game) {
+  const r = game && game.rng;
+  if (typeof r === 'function') return r();
+  if (r && typeof r.next === 'function') return r.next();
+  if (r && typeof r.random === 'function') return r.random();
+  if (r && typeof r.float === 'function') return r.float();
+  return 0.5;
+}
+
+function rngRange(game, min, max) {
+  return min + rngFloat(game) * (max - min);
+}
+
+function wrapAngle(a) {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+}
+
+function makeBox(w, h, d, colour, x, y, z) {
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(w, h, d),
+    new THREE.MeshStandardMaterial({ color: colour, roughness: 0.85, metalness: 0.05 })
+  );
+  mesh.position.set(x, y, z);
+  mesh.castShadow = true;
+  return mesh;
+}
+
+export function createPedestrians(game) {
+  const cfg = game.config || {};
+  const wantedCount = cfg.pedCount || 24;
+
+  let lastShot = null;
+  let lastShotAt = -1000;
+  if (game.events && game.events.on) {
+    game.events.on('gunshot', (e) => {
+      if (!e) return;
+      lastShot = { x: e.x || 0, z: e.z || 0 };
+      lastShotAt = typeof game.time === 'number' ? game.time : 0;
     });
   }
-  return peds;
-}
 
-function pickTarget(ped, world, random) {
-  const spot = world.nearestRoadPoint(ped.x, ped.y);
-  ped.targetX = spot.x + range(random, -260, 260);
-  ped.targetY = spot.y + range(random, -260, 260);
-  ped.targetX = Math.max(40, Math.min(WORLD_W - 40, ped.targetX));
-  ped.targetY = Math.max(40, Math.min(WORLD_H - 40, ped.targetY));
-}
-
-export function updatePedestrians(peds, player, cars, gunshot, world, random, dt) {
-  const px = player.inCar ? player.inCar.x : player.x;
-  const py = player.inCar ? player.inCar.y : player.y;
-  for (const ped of peds) {
-    if (ped.down) {
-      ped.downTimer -= dt;
-      if (ped.downTimer <= 0) ped.down = false;
-      continue;
-    }
-    if (ped.panic > 0) ped.panic -= dt;
-    // Panic: a gunshot, or the player barrelling toward them in a car.
-    if (gunshot && dist(ped.x, ped.y, px, py) < 500) ped.panic = 2.5;
-    const nearCar = player.inCar && dist(ped.x, ped.y, px, py) < 120 && Math.abs(player.inCar.speed) > 150;
-    if (nearCar) ped.panic = 1.5;
-    const speed = ped.panic > 0 ? 240 : ped.speed;
-    ped.retarget -= dt;
-    if (ped.retarget <= 0 || dist(ped.x, ped.y, ped.targetX, ped.targetY) < 24) {
-      if (ped.panic > 0) {
-        // Flee away from the player.
-        const a = Math.atan2(ped.y - py, ped.x - px);
-        ped.targetX = ped.x + Math.cos(a) * 300;
-        ped.targetY = ped.y + Math.sin(a) * 300;
-      } else {
-        pickTarget(ped, world, random);
-      }
-      ped.retarget = 3 + random() * 4;
-    }
-    const a = Math.atan2(ped.targetY - ped.y, ped.targetX - ped.x);
-    ped.angle = a;
-    const next = world.moveWithCollision(ped.x, ped.y, Math.cos(a) * speed * dt, Math.sin(a) * speed * dt, 10);
-    ped.x = next.x;
-    ped.y = next.y;
-    // A car hitting a pedestrian knocks them down and is a serious crime.
-    for (const car of cars) {
-      if (car.wrecked) continue;
-      if (Math.abs(car.speed) > 100 && dist(ped.x, ped.y, car.x, car.y) < 30) {
-        ped.down = true;
-        ped.downTimer = 6;
-        ped.hitBy = car === player.inCar ? 'player' : car.kind;
-      }
-    }
+  function playerPos() {
+    if (game.player && game.player.position) return game.player.position;
+    return { x: 0, z: 0 };
   }
+
+  function buildPed() {
+    const group = new THREE.Group();
+    const shirt = SHIRTS[Math.floor(rngFloat(game) * SHIRTS.length) % SHIRTS.length];
+    const pants = PANTS[Math.floor(rngFloat(game) * PANTS.length) % PANTS.length];
+    const skin = SKINS[Math.floor(rngFloat(game) * SKINS.length) % SKINS.length];
+    const body = makeBox(0.5, 0.62, 0.3, shirt, 0, 1.12, 0);
+    const head = makeBox(0.32, 0.32, 0.3, skin, 0, 1.66, 0);
+    const legL = makeBox(0.18, 0.68, 0.2, pants, -0.13, 0.4, 0);
+    const legR = makeBox(0.18, 0.68, 0.2, pants, 0.13, 0.4, 0);
+    const armL = makeBox(0.14, 0.55, 0.16, shirt, -0.34, 1.14, 0);
+    const armR = makeBox(0.14, 0.55, 0.16, shirt, 0.34, 1.14, 0);
+    legL.geometry.translate(0, -0.31, 0);
+    legL.position.y = 0.74;
+    legR.geometry.translate(0, -0.31, 0);
+    legR.position.y = 0.74;
+    armL.geometry.translate(0, -0.24, 0);
+    armL.position.y = 1.4;
+    armR.geometry.translate(0, -0.24, 0);
+    armR.position.y = 1.4;
+    group.add(body, head, legL, legR, armL, armR);
+    const scale = rngRange(game, 0.92, 1.06);
+    group.scale.setScalar(scale);
+    return { group, legL, legR, armL, armR };
+  }
+
+  function spawnPed() {
+    const p = playerPos();
+    const world = game.world;
+    const angle = rngFloat(game) * Math.PI * 2;
+    const dist = rngRange(game, 12, 85);
+    let x = p.x + Math.sin(angle) * dist;
+    let z = p.z + Math.cos(angle) * dist;
+    let heading = rngFloat(game) * Math.PI * 2;
+    if (world && world.nearestRoadPoint) {
+      const road = world.nearestRoadPoint(x, z);
+      if (road) {
+        // Sidewalk: a few metres to the side of the road centre line.
+        const side = rngFloat(game) < 0.5 ? -1 : 1;
+        const rx = Math.cos(road.heading || 0);
+        const rz = -Math.sin(road.heading || 0);
+        x = (road.x || x) + rx * 5.4 * side;
+        z = (road.z || z) + rz * 5.4 * side;
+        heading = (road.heading || 0) + (rngFloat(game) < 0.5 ? 0 : Math.PI);
+      }
+    }
+    const parts = buildPed();
+    parts.group.position.set(x, 0, z);
+    parts.group.rotation.y = heading;
+    if (game.scene) game.scene.add(parts.group);
+    const ped = {
+      mesh: parts.group,
+      position: parts.group.position,
+      heading,
+      speed: 0,
+      state: 'walk',
+      walkSpeed: 1.5,
+      downTimer: 0,
+      fleeTimer: 0,
+      turnTimer: rngRange(game, 3, 8),
+      swing: rngFloat(game) * Math.PI * 2,
+      legL: parts.legL,
+      legR: parts.legR,
+      armL: parts.armL,
+      armR: parts.armR,
+    };
+    peds.list.push(ped);
+    return ped;
+  }
+
+  function removePed(ped) {
+    const i = peds.list.indexOf(ped);
+    if (i >= 0) peds.list.splice(i, 1);
+    if (game.scene) game.scene.remove(ped.mesh);
+  }
+
+  function standUp(ped) {
+    ped.state = 'walk';
+    ped.mesh.rotation.x = 0;
+    ped.mesh.position.y = 0;
+    ped.speed = 0;
+    ped.heading = rngFloat(game) * Math.PI * 2;
+    ped.mesh.rotation.y = ped.heading;
+  }
+
+  const peds = {
+    list: [],
+
+    nearest(x, z, maxDist) {
+      let best = null;
+      let bestD = maxDist === undefined ? Infinity : maxDist;
+      for (const ped of peds.list) {
+        if (ped.state === 'down') continue;
+        const d = Math.hypot(ped.position.x - x, ped.position.z - z);
+        if (d < bestD) {
+          bestD = d;
+          best = ped;
+        }
+      }
+      return best;
+    },
+
+    knockDown(ped) {
+      if (!ped || ped.state === 'down') return;
+      ped.state = 'down';
+      ped.speed = 0;
+      ped.downTimer = rngRange(game, 3, 5);
+      // Fall flat on the back.
+      ped.mesh.rotation.x = -Math.PI / 2 + 0.12;
+      ped.mesh.position.y = 0.35;
+      ped.legL.rotation.x = 0;
+      ped.legR.rotation.x = 0;
+      ped.armL.rotation.x = 0;
+      ped.armR.rotation.x = 0;
+    },
+
+    update(dt) {
+      if (game.state && game.state !== 'playing') return;
+      const p = playerPos();
+      const world = game.world;
+      const now = typeof game.time === 'number' ? game.time : 0;
+
+      while (peds.list.length < wantedCount) spawnPed();
+
+      for (let i = peds.list.length - 1; i >= 0; i--) {
+        const ped = peds.list[i];
+        const distToPlayer = Math.hypot(ped.position.x - p.x, ped.position.z - p.z);
+
+        if (ped.state === 'down') {
+          ped.downTimer -= dt;
+          if (ped.downTimer <= 0) {
+            if (distToPlayer > 60) {
+              removePed(ped);
+              spawnPed();
+            } else {
+              standUp(ped);
+            }
+          }
+          continue;
+        }
+
+        if (distToPlayer > 160) {
+          removePed(ped);
+          spawnPed();
+          continue;
+        }
+
+        // Flee a recent gunshot, or a fast car bearing down on them.
+        let threat = null;
+        if (lastShot && now - lastShotAt < 6) {
+          const dShot = Math.hypot(ped.position.x - lastShot.x, ped.position.z - lastShot.z);
+          if (dShot < 28) threat = lastShot;
+        }
+        if (!threat && game.player && game.player.car && Math.abs(game.player.car.speed || 0) > 8) {
+          if (distToPlayer < 12) threat = { x: p.x, z: p.z };
+        }
+        if (threat) {
+          ped.state = 'flee';
+          ped.fleeTimer = 2.5;
+          ped.heading = Math.atan2(ped.position.x - threat.x, ped.position.z - threat.z);
+        } else if (ped.state === 'flee') {
+          ped.fleeTimer -= dt;
+          if (ped.fleeTimer <= 0) ped.state = 'walk';
+        }
+
+        if (ped.state === 'walk') {
+          ped.turnTimer -= dt;
+          if (ped.turnTimer <= 0) {
+            ped.turnTimer = rngRange(game, 4, 9);
+            if (world && world.nearestRoadPoint) {
+              const road = world.nearestRoadPoint(ped.position.x, ped.position.z);
+              if (road) {
+                const roll = rngFloat(game);
+                if (roll < 0.6) ped.heading = road.heading || 0;
+                else if (roll < 0.8) ped.heading = (road.heading || 0) + Math.PI / 2;
+                else ped.heading = (road.heading || 0) - Math.PI / 2;
+                if (rngFloat(game) < 0.5) ped.heading += Math.PI;
+              }
+            } else {
+              ped.heading += rngRange(game, -1.2, 1.2);
+            }
+          }
+        }
+
+        const speed = ped.state === 'flee' ? 4 : ped.walkSpeed;
+        ped.speed = speed;
+        const nx = ped.position.x + Math.sin(ped.heading) * speed * dt;
+        const nz = ped.position.z + Math.cos(ped.heading) * speed * dt;
+        if (world && world.isBlocked && world.isBlocked(nx, nz, 0.4)) {
+          // Turn away from the wall instead of walking through it.
+          ped.heading += Math.PI / 2 + rngRange(game, -0.4, 0.4);
+        } else {
+          ped.position.x = nx;
+          ped.position.z = nz;
+        }
+        ped.mesh.rotation.y = ped.heading;
+        ped.swing += dt * speed * 3.2;
+        const swing = Math.sin(ped.swing) * (ped.state === 'flee' ? 0.85 : 0.55);
+        ped.legL.rotation.x = swing;
+        ped.legR.rotation.x = -swing;
+        ped.armL.rotation.x = -swing * 0.8;
+        ped.armR.rotation.x = swing * 0.8;
+      }
+    },
+  };
+
+  for (let i = 0; i < wantedCount; i++) spawnPed();
+
+  return peds;
 }

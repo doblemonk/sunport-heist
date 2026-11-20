@@ -1,140 +1,123 @@
+[![gta6-01](https://make.fun/badge/gta6-01/badge.svg)](https://make.fun/bounty/gta6-01)
+[![rank](https://make.fun/badge/gta6-01/rank/doblemonk/sunport-heist.svg)](https://make.fun/bounty/gta6-01)
+[![reward](https://make.fun/badge/gta6-01/reward/doblemonk/sunport-heist.svg)](https://make.fun/bounty/gta6-01)
+
 # Sunport Heist
 
-[![make.fun bounty](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01)
-[![rank](https://make.fun/badge/gta6-01/doblemonk/sunport-heist/rank.svg)](https://make.fun/bounty/gta6-01)
-[![reward](https://make.fun/badge/gta6-01/doblemonk/sunport-heist/reward.svg)](https://make.fun/bounty/gta6-01)
+An open-world crime game in the coastal city of **Solmar**. You are Rafi "Reef"
+Marlowe, and you owe Lena Voss one last debt. The only way to pay it is to run
+the jobs nobody else in Solmar will touch — steal cars, dodge the Solmar PD,
+and pull off six jobs, from a first delivery to the Sunport vault itself.
 
-An open-world crime game set in **Solmar**, a sun-soaked coastal city.
-You are Rafi "Reef" Marlowe, a courier who owes Lena Voss one last debt.
-Six jobs stand between you and freedom — and the whole city, its traffic,
-its pedestrians and its police are in your way.
-
-This is an original game: its city, characters, story, art and music are
-all my own. It is a 3D low-poly open world in the spirit of the modern
-era of the genre, rendered with Three.js (vendored under game/vendor/),
-with a third-person follow camera, sun and shadows, and a day/night tint;
-no build step and no network requests. Open `game/index.html` in a desktop
-browser and it just plays.
+The game runs entirely from static files in `game/`, with no build step and no
+network requests. Open it with `node serve.ts` and play at
+http://localhost:8080 in desktop Chrome.
 
 ## How to play
 
-Serve the game (any static server works) and open it in desktop Chrome:
+Explore Solmar on foot or by car. Walk up to a parked car and take it, earn
+cash from jobs and street pickups, and stay out of the police's reach. Getting
+busted costs you the smaller of $200 or ten percent of your cash, and sends you
+back to the hideout with the current job restarted. Finish all six missions to
+complete the story. Progress can be saved and continued later.
 
-```sh
-node serve.ts
-# then open http://localhost:8080
-```
-
-### Controls
+## Controls
 
 | Key | Action |
 | --- | --- |
-| WASD / Arrow keys | Walk, run (with Shift), drive, steer |
-| E | Steal / enter the nearest car, exit the car you are driving |
-| J | Punch |
-| K or mouse click | Shoot the pistol (aims at the cursor) |
-| Shift | Run on foot |
-| P / Esc | Pause |
-| F | Save progress |
-| M | Mute the sound |
-| Enter / click | Start, resume, try again |
-| C | Continue a saved game from the title screen |
+| W A S D | Move on foot / drive |
+| Shift | Run |
+| E | Enter / exit a car |
+| F | Punch |
+| Mouse + click | Aim and shoot |
+| Space | Handbrake |
+| P or Esc | Pause / resume |
+| F (while playing) | Save progress |
+| M | Mute / unmute |
+| C (title screen) | Continue a saved game |
+| Enter / click | Start, resume, or retry |
 
-### The city
+## The city
 
-Five districts to explore on foot and by car: **Palma Beach** (sand,
-sea and umbrellas), **Downtown Solmar** (towers and traffic),
-**Old Docks** (the container yard), **Marina Hills** and the
-**North Suburbs**. Traffic cars drive the grid, pedestrians stroll the
-sidewalks and run from gunfire, and the clock runs from morning to dusk
-with a day/night tint.
+Solmar stretches about 840 metres across, with a road grid, beaches, docks,
+and hills, and a day cycle that runs from 08:00 to 19:00. Its five districts:
 
-### Wanted level
+- **Palma Beach** — the sunny shoreline, pickup drops and the first jobs.
+- **Downtown Solmar** — dense streets, the best cars, and the most police.
+- **Old Docks** — warehouses, crates, and the Dock Heist.
+- **Marina Hills** — quiet hills above the marina, good for losing a tail.
+- **North Suburbs** — wide streets and the hideout.
 
-Steal a car, punch a pedestrian or shoot a cop and the stars climb, 0 to
-5. Cruisers ram you and foot cops chase you down — get caught standing
-still next to one for too long and you are **BUSTED**. Break line of
-sight and stay hidden and the heat cools off, one star at a time.
+## Wanted level
 
-### Missions
+Crime draws heat. Stealing a car, punching a pedestrian, or hitting a cop each
+raise your wanted level by one star, up to five. Police cruisers and officers
+respond harder as the stars climb. Stay out of sight — roughly 40 metres — and
+the heat cools down after about 20 seconds. Get caught within arm's reach of a
+cop for 3 seconds and you are busted.
 
-Follow the yellow marker. Six story jobs, each with a timer and a cash
-reward:
+## Missions
 
-1. **First Delivery** — a courier run to Marina Hills.
-2. **Hot Wheels** — repo a gold coupe from the North Suburbs and deliver
-   it to the Old Docks.
-3. **Beach Pickup** — collect three drops along Palma Beach.
-4. **Getaway Driver** — lose a two-star heat, then get back to the
-   Hideout.
-5. **Dock Heist** — grab the cash crate in the container yard and run
-   it home under three stars.
-6. **The Sunport Heist** — the downtown vault, four stars, one drive
-   home. Pay the debt. Walk free.
+Six jobs, each with a timer and a payout:
 
-Finish a job to get paid (plus ammo). Run out of time and you can walk
-back to the marker and try again. Progress — cash, health, ammo and the
-next job — saves to the browser with F and continues from the title
-screen with C.
+1. **First Delivery** — 120 s, $300
+2. **Hot Wheels** — 180 s, $500
+3. **Beach Pickup** — 150 s, $400
+4. **Getaway Driver** — 180 s, $600
+5. **Dock Heist** — 240 s, $1,500
+6. **The Sunport Heist** — 300 s, $5,000
 
-### HUD and minimap
+Follow the marker on the map and the objective line on the HUD. Cash and ammo
+pickups are scattered around the city — cash is worth $25–$100, ammo crates
+give 12 rounds.
 
-Cash and health top-left, wanted stars and the clock top-right, ammo and
-driving hints bottom-left, the live objective bottom-centre, and a live
-minimap bottom-right showing you, the cars, the cops and the mission
-marker, with north marked.
+## HUD and minimap
 
-### Sound
+The HUD shows cash, health, ammo, the wanted stars, the in-game clock, and the
+current objective, plus banner messages for jobs, saves, and busts. The round
+minimap in the bottom-right corner shows the streets, the player, traffic,
+police, and the mission marker.
 
-Every sound is synthesised with WebAudio — no audio files: a sunny
-bass-and-pluck music loop, engine hum, sirens, gunshots, punches,
-pickups and cash. It starts on your first key press or click.
+## Sound
+
+All sound is synthesised live with the Web Audio API — no audio files. Engine
+hum follows your speed, sirens wail while you are wanted, and gunshots,
+punches, pickups, cash, and mission stingers are all generated in code. A
+small procedural music loop plays while you drive the city.
 
 ## Screenshots
 
-The four screenshots in `screenshots/` are real renders of the game in
-a browser, staged deterministically with URL parameters:
+`screenshots/` holds four renders of the game itself, taken in the browser:
 
-| Shot | Scene |
-| --- | --- |
-| `1-cover.jpg` | `?shot=chase` — three stars, cruisers on your tail, getaway job running |
-| `2-drive.jpg` | `?shot=drive` — cruising downtown in a stolen car |
-| `3-mission.jpg` | `?shot=mission` — the Dock Heist cash grab |
-| `4-start.jpg` | `?shot=start` — the title screen over the city |
+- `1-cover.jpg` — a police chase during the Getaway Driver job (the cover)
+- `2-drive.jpg` — driving a sedan downtown
+- `3-mission.jpg` — the Dock Heist in progress at the Old Docks
+- `4-start.jpg` — the title screen over the city
+
+They are staged with the `?shot=` query (`chase`, `drive`, `mission`, `start`)
+so each one is repeatable from the same seed.
 
 ## Files
 
-```
-game/
-  index.html        the page: one canvas, one module script
-  src/
-    main.js         boot, the loop, the camera, the screens, shot staging
-    config.js       tuning numbers, districts, car colours, spawn spots
-    random.js       seeded RNG, so scenes repeat exactly
-    world.js        the city: roads, buildings, beach, docks, collision
-    input.js        keyboard and mouse
-    audio.js        synthesised effects and the music loop (WebAudio)
-    player.js       Rafi on foot: walk, run, punch, shoot
-    vehicles.js     cars: driving physics, stealing, drawing
-    traffic.js      traffic AI: lanes, turns, slowing for the car ahead
-    pedestrians.js  walkers: strolling, fleeing, getting knocked down
-    police.js       wanted level, cruisers, foot cops, arrests, heat decay
-    combat.js       fists, pistol, bullets, cash and ammo pickups
-    missions.js     the six story jobs, markers, timers, rewards
-    hud.js          cash, health, ammo, stars, clock, objectives, banners
-    minimap.js      the live minimap
-    save.js         localStorage save / load / continue
-main.ts             hands the entry in: copies game/ + screenshots/ and
-                    writes dossier.json (Node 22, standard library only)
-serve.ts            tiny static server for local play
-shots.json          the four deterministic screenshot scenes
-```
-
-## Entry
-
-Built for the make.fun **Make GTA 6** bounty
-([gta6-01](https://make.fun/bounty/gta6-01)).
-
-## License
-
-MIT — see `LICENSE`.
+- `game/index.html` — the page, HUD, and screens
+- `game/src/main.js` — boot, loop, camera, screens, shot staging
+- `game/src/config.js` — tuning: city, speeds, wanted rules, missions
+- `game/src/rng.js` — seeded random generator
+- `game/src/world.js` — city, districts, roads, buildings, day cycle
+- `game/src/input.js` — keyboard and mouse
+- `game/src/audio.js` — synthesised sound and music
+- `game/src/player.js` — Rafi on foot and behind the wheel
+- `game/src/vehicles.js` — cars, spawning, entering and exiting
+- `game/src/traffic.js` — ambient traffic
+- `game/src/peds.js` — pedestrians
+- `game/src/police.js` — wanted level, cruisers, cops, busts
+- `game/src/combat.js` — punching, shooting, bullets, pickups
+- `game/src/missions.js` — the six jobs, markers, timers
+- `game/src/hud.js` — HUD and screens
+- `game/src/minimap.js` — the round minimap
+- `game/src/save.js` — save / load (localStorage key `sunport-heist-save-v1`)
+- `game/vendor/three.min.js` — vendored Three.js
+- `main.ts` — the make.fun entrypoint, writes `dossier.json`
+- `serve.ts` — tiny static server for local play
+- `shots.json` — the four staged screenshots
+- `screenshots/` — the four screenshots

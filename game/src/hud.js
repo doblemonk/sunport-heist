@@ -1,123 +1,131 @@
-// The HUD: cash, health, ammo, wanted stars, the clock, the district name
-// and the mission objective, painted on top of the world every frame.
-import { FONT, PLAYER } from './config.js';
-import { districtAt } from './world.js';
+// Sunport Heist — HUD
+// Owns every on-screen readout and overlay: cash, health, ammo, wanted
+// stars, clock, objective line, centre banner, context hint and the
+// title / playing / paused / busted / complete screens.
 
-export function formatClock(minutes) {
-  const h = Math.floor(minutes / 60) % 24;
-  const m = Math.floor(minutes % 60);
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-}
+export function createHud(game) {
+  const el = (id) => document.getElementById(id);
+  const cashEl = el('hud-cash');
+  const healthFill = el('hud-health-fill');
+  const healthNum = el('hud-health-num');
+  const ammoEl = el('hud-ammo');
+  const starsEl = el('hud-stars');
+  const clockEl = el('hud-clock');
+  const objectiveEl = el('hud-objective');
+  const timerEl = el('hud-timer');
+  const bannerEl = el('hud-banner');
+  const hintEl = el('hud-hint');
 
-export function drawHud(ctx, game, width, height) {
-  const player = game.player;
-  ctx.textBaseline = 'alphabetic';
-  // Top-left: cash and health.
-  ctx.fillStyle = 'rgba(0,0,0,0.55)';
-  ctx.fillRect(14, 14, 250, 86);
-  ctx.fillStyle = '#4fb06a';
-  ctx.font = `bold 26px ${FONT}`;
-  ctx.textAlign = 'left';
-  ctx.fillText(`$${player.cash.toLocaleString('en-US')}`, 26, 44);
-  ctx.fillStyle = '#e8e4da';
-  ctx.font = `15px ${FONT}`;
-  ctx.fillText('CASH', 26, 64);
-  ctx.fillStyle = 'rgba(255,255,255,0.2)';
-  ctx.fillRect(26, 72, 150, 10);
-  ctx.fillStyle = player.health > 40 ? '#4fb06a' : '#d94f3d';
-  ctx.fillRect(26, 72, 150 * (player.health / PLAYER.maxHealth), 10);
-  ctx.fillStyle = '#e8e4da';
-  ctx.fillText(`HEALTH ${Math.ceil(player.health)}`, 184, 82);
+  const screens = {};
+  ['title', 'playing', 'paused', 'busted', 'complete'].forEach((name) => {
+    const node = el('screen-' + name);
+    if (node) screens[name] = node;
+  });
 
-  // Top-right: wanted stars and the clock.
-  const stars = player.wanted;
-  ctx.fillStyle = 'rgba(0,0,0,0.55)';
-  ctx.fillRect(width - 264, 14, 250, 52);
-  ctx.font = '26px ' + FONT;
-  ctx.textAlign = 'right';
-  for (let i = 0; i < 5; i += 1) {
-    ctx.fillStyle = i < stars ? '#e8b93c' : 'rgba(255,255,255,0.25)';
-    ctx.fillText('★', width - 30 - i * 30, 48);
-  }
-  ctx.fillStyle = '#e8e4da';
-  ctx.font = `bold 18px ${FONT}`;
-  ctx.textAlign = 'left';
-  ctx.fillText(formatClock(game.clockMinutes), width - 250, 40);
-  ctx.font = `13px ${FONT}`;
-  ctx.fillText(districtAt(player.x, player.y).name, width - 250, 58);
+  let bannerTimer = null;
+  let objectiveText = '';
 
-  // Ammo and car hint, bottom-left, on two lines so nothing overlaps.
-  ctx.fillStyle = 'rgba(0,0,0,0.55)';
-  ctx.fillRect(14, height - 74, 330, 60);
-  ctx.fillStyle = '#e8e4da';
-  ctx.font = `bold 18px ${FONT}`;
-  ctx.textAlign = 'left';
-  ctx.fillText(`AMMO ${player.ammo}`, 26, height - 50);
-  ctx.font = `14px ${FONT}`;
-  ctx.fillStyle = '#c9c2b4';
-  ctx.fillText(player.inCar ? 'E — exit car   W/S drive   A/D steer' : 'E — steal car   J punch   K / click shoot', 26, height - 28);
-
-  // Mission objective bar, bottom centre.
-  const objective = game.objectiveText;
-  if (objective) {
-    ctx.font = `bold 17px ${FONT}`;
-    const w = ctx.measureText(objective).width + 36;
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect((width - w) / 2, height - 64, w, 34);
-    ctx.fillStyle = '#e8b93c';
-    ctx.textAlign = 'center';
-    ctx.fillText(objective, width / 2, height - 41);
+  function formatCash(value) {
+    const n = Math.max(0, Math.floor(value || 0));
+    return '$' + n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   }
 
-  // Arrest warning.
-  if (game.police.arrestProgress > 0.05) {
-    ctx.fillStyle = 'rgba(217,79,61,0.85)';
-    ctx.fillRect((width - 260) / 2, 90, 260, 34);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = `bold 17px ${FONT}`;
-    ctx.textAlign = 'center';
-    ctx.fillText('BUSTED INCOMING — RUN!', width / 2, 113);
+  function formatClock(hours) {
+    const h = Math.floor(((hours || 0) % 24 + 24) % 24);
+    const m = Math.floor((((hours || 0) % 1 + 1) % 1) * 60);
+    const pad = (v) => (v < 10 ? '0' + v : '' + v);
+    return pad(h) + ':' + pad(m);
   }
 
-  // Mission banner, centre-top.
-  if (game.missions.bannerTimer > 0) {
-    const lines = wrapText(ctx, game.missions.banner, width - 240, `bold 19px ${FONT}`);
-    const h = lines.length * 26 + 24;
-    ctx.fillStyle = 'rgba(20,20,30,0.82)';
-    ctx.fillRect((width - Math.min(width - 200, 760)) / 2, 130, Math.min(width - 200, 760), h);
-    ctx.fillStyle = '#e8b93c';
-    ctx.font = `bold 19px ${FONT}`;
-    ctx.textAlign = 'center';
-    lines.forEach((line, i) => {
-      ctx.fillText(line, width / 2, 130 + 34 + i * 26);
-    });
+  function formatTimer(seconds) {
+    const total = Math.max(0, Math.ceil(seconds || 0));
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return m + ':' + (s < 10 ? '0' + s : '' + s);
   }
 
-  // Story complete ribbon.
-  if (game.missions.storyDone) {
-    ctx.fillStyle = 'rgba(232,185,60,0.92)';
-    ctx.fillRect((width - 420) / 2, height - 120, 420, 34);
-    ctx.fillStyle = '#1f2937';
-    ctx.font = `bold 17px ${FONT}`;
-    ctx.textAlign = 'center';
-    ctx.fillText('DEBT PAID — SOLMAR IS YOURS, REEF', width / 2, height - 97);
+  function renderStars(wanted) {
+    const level = Math.max(0, Math.min(5, Math.round(wanted || 0)));
+    let out = '';
+    for (let i = 0; i < 5; i++) {
+      out += i < level ? '★' : '☆';
+    }
+    return out;
   }
-}
 
-function wrapText(ctx, text, maxWidth, font) {
-  ctx.font = font;
-  const words = text.split(' ');
-  const lines = [];
-  let line = '';
-  for (const word of words) {
-    const next = line ? line + ' ' + word : word;
-    if (ctx.measureText(next).width > maxWidth && line) {
-      lines.push(line);
-      line = word;
-    } else {
-      line = next;
+  function drivingNow() {
+    if (game.player && game.player.car) return true;
+    if (game.player && typeof game.player.onFoot !== 'undefined') return !game.player.onFoot;
+    if (game.vehicles && game.vehicles.playerCar) return true;
+    return false;
+  }
+
+  function update(dt) {
+    if (cashEl) cashEl.textContent = formatCash(game.cash);
+
+    const health = Math.max(0, Math.min(100, game.health == null ? 100 : game.health));
+    if (healthFill) healthFill.style.width = health + '%';
+    if (healthNum) healthNum.textContent = String(Math.round(health));
+
+    if (ammoEl) ammoEl.textContent = String(Math.max(0, game.ammo || 0));
+    if (starsEl) {
+      starsEl.textContent = renderStars(game.wanted);
+      starsEl.classList.toggle('wanted-hot', (game.wanted || 0) >= 3);
+    }
+    if (clockEl) clockEl.textContent = formatClock(game.clockHours);
+
+    if (objectiveEl) {
+      const fromMissions =
+        game.missions && typeof game.missions.objectiveText === 'function'
+          ? game.missions.objectiveText()
+          : game.missions && game.missions.current && game.missions.current.name
+            ? game.missions.current.name
+            : '';
+      const text = objectiveText || fromMissions;
+      if (objectiveEl.textContent !== text) objectiveEl.textContent = text;
+    }
+
+    if (timerEl) {
+      const current = game.missions && game.missions.current ? game.missions.current : null;
+      const remaining = current != null
+        ? (current.remaining ?? current.timeLeft ?? current.timeRemaining ?? current.remainingTime ?? current.countdown)
+        : null;
+      const fallback = game.missions != null
+        ? (game.missions.remaining ?? game.missions.timeLeft ?? game.missions.timeRemaining)
+        : null;
+      const value = remaining != null ? remaining : fallback;
+      timerEl.textContent = value == null ? '' : formatTimer(value);
+    }
+
+    if (hintEl) {
+      hintEl.textContent = drivingNow()
+        ? 'W A S D drive  •  SPACE brake  •  E exit car'
+        : 'W A S D move  •  SHIFT run  •  E enter car  •  CLICK shoot  •  F save';
     }
   }
-  if (line) lines.push(line);
-  return lines;
+
+  function showScreen(name) {
+    Object.keys(screens).forEach((key) => {
+      screens[key].style.display = key === name ? 'flex' : 'none';
+    });
+    const hud = el('hud');
+    if (hud) hud.style.display = name === 'playing' ? 'block' : 'none';
+  }
+
+  function showBanner(text, ms) {
+    if (!bannerEl) return;
+    bannerEl.textContent = text || '';
+    bannerEl.style.opacity = '1';
+    if (bannerTimer) clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(() => {
+      bannerEl.style.opacity = '0';
+    }, ms == null ? 2200 : ms);
+  }
+
+  function setObjective(text) {
+    objectiveText = text || '';
+    if (objectiveEl) objectiveEl.textContent = objectiveText;
+  }
+
+  return { update, showScreen, showBanner, setObjective };
 }
