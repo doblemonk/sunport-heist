@@ -1,47 +1,25 @@
-// Sunport Heist — save
-// Persists the player's progress in localStorage under one key and reads
-// it back for the title screen's Continue option. The main script wires
-// F to save and C on the title screen to continue.
+const SAVE_KEY = 'sunport-heist-save';
 
 export function createSave(game) {
-  const KEY = 'sunport-heist-save-v1';
-
+  // The missions system exposes the active job as an object (with a
+  // getter-only `current` property), so the save stores its job index,
+  // not the object itself — assigning an object back would never restore.
   function missionIndex() {
-    const m = game.missions;
-    if (!m) return 0;
-    if (typeof m.current === 'number') return m.current;
-    if (m.current && typeof m.current.index === 'number') return m.current.index;
-    if (typeof m.nextIndex === 'number') return m.nextIndex;
+    const m = game.missions && game.missions.current;
+    if (!m) return -1;
     if (typeof m.index === 'number') return m.index;
-    return 0;
-  }
-
-  function playerPos() {
-    const p = game.player || {};
-    return {
-      x: p.x != null ? p.x : p.position ? p.position.x : 0,
-      z: p.z != null ? p.z : p.position ? p.position.z : 0,
-      heading: p.heading != null ? p.heading : 0,
-    };
+    return -1;
   }
 
   function saveGame() {
-    const pos = playerPos();
-    const data = {
-      version: 1,
-      cash: game.cash || 0,
-      health: game.health == null ? 100 : game.health,
-      ammo: game.ammo || 0,
-      mission: missionIndex(),
-      x: pos.x,
-      z: pos.z,
-      heading: pos.heading,
-      clockHours: game.clockHours == null ? 8 : game.clockHours,
-      wanted: game.wanted || 0,
-      savedAt: Date.now(),
-    };
     try {
-      localStorage.setItem(KEY, JSON.stringify(data));
+      const data = {
+        cash: game.cash,
+        health: game.health,
+        ammo: game.ammo,
+        mission: missionIndex(),
+      };
+      window.localStorage.setItem(SAVE_KEY, JSON.stringify(data));
       return true;
     } catch (e) {
       return false;
@@ -49,37 +27,32 @@ export function createSave(game) {
   }
 
   function loadGame() {
-    let raw = null;
     try {
-      raw = localStorage.getItem(KEY);
+      const raw = window.localStorage.getItem(SAVE_KEY);
+      if (!raw) return false;
+      const d = JSON.parse(raw);
+      if (typeof d.cash === 'number') game.cash = d.cash;
+      if (typeof d.health === 'number') game.health = d.health;
+      if (typeof d.ammo === 'number') game.ammo = d.ammo;
+      // Accept the saved index; also tolerate an older save that stored
+      // the mission object itself by reading its index field.
+      let mi = -1;
+      if (typeof d.mission === 'number') mi = d.mission;
+      else if (d.mission && typeof d.mission.index === 'number') mi = d.mission.index;
+      if (mi >= 0 && game.missions) game.missions.start(mi);
+      return true;
     } catch (e) {
-      return null;
-    }
-    if (!raw) return null;
-    try {
-      const data = JSON.parse(raw);
-      if (!data || typeof data !== 'object') return null;
-      return data;
-    } catch (e) {
-      return null;
+      return false;
     }
   }
 
   function hasSave() {
-    return loadGame() !== null;
-  }
-
-  function clearSave() {
     try {
-      localStorage.removeItem(KEY);
+      return window.localStorage.getItem(SAVE_KEY) !== null;
     } catch (e) {
-      // Storage unavailable; nothing to clear.
+      return false;
     }
   }
 
-  function update(dt) {
-    // Saving is event-driven (F key); nothing per frame.
-  }
-
-  return { saveGame, loadGame, hasSave, clearSave, update };
+  return { saveGame, loadGame, hasSave };
 }

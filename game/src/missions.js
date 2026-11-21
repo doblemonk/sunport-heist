@@ -1,264 +1,255 @@
-// missions.js — the six story jobs of Sunport Heist and the yellow marker.
-// Job 1 starts automatically when play begins (the main script calls
-// start(0)). Each job pays cash and ammo on completion and starts the
-// next one; the last job ends the game.
-
+// Sunport Heist — missions: the six story jobs, markers, timers, rewards.
 export function createMissions(game) {
-  const THREE = game.THREE;
-  const cfg = game.config || {};
-  const REACH_DIST = 4;
-
-  const defs = (cfg.missions || []).map((m) => ({
-    name: m.name || 'Job',
-    timeLimit: m.timeLimit || m.time || 180,
-    cash: m.cash || m.reward || 500,
-    ammo: m.ammo || m.ammoReward || 12,
-  }));
-  // Fallbacks so the story still runs if the config list is short.
   const FALLBACK = [
-    { name: 'First Delivery', timeLimit: 180, cash: 300, ammo: 12 },
-    { name: 'Hot Wheels', timeLimit: 240, cash: 500, ammo: 12 },
-    { name: 'Beach Pickup', timeLimit: 240, cash: 450, ammo: 12 },
-    { name: 'Getaway Driver', timeLimit: 240, cash: 600, ammo: 12 },
-    { name: 'Dock Heist', timeLimit: 300, cash: 900, ammo: 24 },
-    { name: 'The Sunport Heist', timeLimit: 360, cash: 2500, ammo: 24 },
+    { name: 'First Delivery', time: 120, cash: 300, ammo: 12 },
+    { name: 'Hot Wheels', time: 180, cash: 500, ammo: 12 },
+    { name: 'Beach Pickup', time: 150, cash: 400, ammo: 12 },
+    { name: 'Getaway Driver', time: 180, cash: 600, ammo: 12 },
+    { name: 'Dock Heist', time: 240, cash: 1500, ammo: 12 },
+    { name: 'The Sunport Heist', time: 300, cash: 5000, ammo: 24 }
   ];
-  while (defs.length < 6) defs.push(FALLBACK[defs.length]);
-
-  // --- marker: cylinder beacon, pulsing ring and a light pillar ----------
-  const marker = new THREE.Group();
-  const beacon = new THREE.Mesh(
-    new THREE.CylinderGeometry(2.2, 2.2, 0.25, 24),
-    new THREE.MeshBasicMaterial({ color: 0xfacc15, transparent: true, opacity: 0.55 })
-  );
-  beacon.position.y = 0.15;
-  marker.add(beacon);
-  const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(2.2, 0.12, 8, 32),
-    new THREE.MeshBasicMaterial({ color: 0xfde047 })
-  );
-  ring.rotation.x = Math.PI / 2;
-  ring.position.y = 0.2;
-  marker.add(ring);
-  const pillar = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.25, 0.45, 30, 12, 1, true),
-    new THREE.MeshBasicMaterial({
-      color: 0xfacc15, transparent: true, opacity: 0.10,
-      side: THREE.DoubleSide, depthWrite: false,
-    })
-  );
-  pillar.position.y = 15;
-  marker.add(pillar);
-  marker.visible = false;
-  if (game.scene) game.scene.add(marker);
-
-  const markerPos = new THREE.Vector3(0, 0, 0);
-
-  const missions = {
-    list: defs,
-    current: null,
-    marker,
-    markerPos,
-    objectiveText,
-    start,
-    update,
+  const SPOTS = {
+    hideout: { x: 0, z: 0 }, marina: { x: 240, z: -60 }, docks: { x: 0, z: 300 },
+    beach: { x: -360, z: 0 }, suburbs: { x: 120, z: -300 }, downtown: { x: 120, z: 120 },
+    vault: { x: 0, z: -120 }, goldCoupe: { x: 240, z: 120 }, cashCrate: { x: -120, z: 240 }
   };
+  const DROP_SPOTS = [{ x: -360, z: -240 }, { x: -360, z: 0 }, { x: -360, z: 240 }];
 
-  function point(name) {
-    const sp = game.world && game.world.spawnPoints;
-    if (!sp) return { x: 0, z: 0 };
-    const p = sp[name];
-    if (!p) return { x: 0, z: 0 };
-    return { x: p.x || 0, z: p.z || 0 };
-  }
-
-  function beachDrop(i) {
-    const sp = game.world && game.world.spawnPoints;
-    const drops = sp && sp.beachDrops;
-    if (drops && drops[i]) return { x: drops[i].x || 0, z: drops[i].z || 0 };
-    const beach = point('beach');
-    return { x: beach.x + i * 30, z: beach.z };
-  }
-
-  // Target position for a job at a given stage.
-  function stageTarget(index, stage) {
-    switch (index) {
-      case 0: return point('marina');
-      case 1:
-        if (stage === 0) return point('goldCoupe');
-        if (stage === 1) return point('goldCoupe');
-        return point('docks');
-      case 2: return beachDrop(stage);
-      case 3: return point('hideout');
-      case 4:
-        if (stage === 0) return point('cashCrate');
-        return point('hideout');
-      case 5:
-        if (stage === 0) return point('vault');
-        return point('hideout');
-      default: return point('hideout');
-    }
-  }
-
-  function stageCount(index) {
-    if (index === 1) return 3;
-    if (index === 2) return 3;
-    if (index === 4) return 2;
-    if (index === 5) return 2;
-    return 1;
-  }
-
-  function moveMarkerTo(x, z) {
-    markerPos.set(x, 0, z);
-    marker.position.set(x, 0, z);
-    marker.visible = true;
-  }
-
-  function start(i) {
-    const def = defs[i];
-    if (!def) return;
-    missions.current = {
-      index: i,
-      name: def.name,
-      stage: 0,
-      timeLeft: def.timeLimit,
-      target: stageTarget(i, 0),
+  function num(...vs) { for (const v of vs) if (typeof v === 'number' && isFinite(v)) return v; return 0; }
+  const raw = game.config && Array.isArray(game.config.missions) && game.config.missions.length ? game.config.missions : FALLBACK;
+  const defs = raw.map((m, i) => {
+    const f = FALLBACK[i] || FALLBACK[0];
+    return {
+      name: m.name || m.title || f.name,
+      time: num(m.time, m.timeLimit, m.limit, m.seconds, m.duration, f.time),
+      cash: num(m.cash, m.reward, m.payout, m.money, f.cash),
+      ammo: num(m.ammo, m.bullets, f.ammo)
     };
-    // Job 4 opens hot: the getaway starts at two stars.
-    if (i === 3 && game.police && game.police.addHeat) {
-      game.police.addHeat(2);
+  });
+
+  let idx = -1, current = null, timeLeft = 0, stage = 0, dropsGot = 0, lastT = 0;
+  let carrying = false, lootTaken = false, waitingRetry = false, retryCooldown = 0;
+  let goldCar = null, crate = null;
+
+  // Yellow marker cone floating over the current objective.
+  let marker = null;
+  if (game.THREE && game.scene) {
+    marker = new game.THREE.Mesh(
+      new game.THREE.ConeGeometry(1.4, 3, 4),
+      new game.THREE.MeshBasicMaterial({ color: 0xffd400 }));
+    marker.rotation.x = Math.PI;
+    marker.position.set(0, 6, 0);
+    marker.visible = false;
+    game.scene.add(marker);
+  }
+
+  function say(t) { if (game.message) game.message(t); }
+  function emit(n, d) { if (game.events && game.events.emit) game.events.emit(n, d || {}); }
+  function sp(name) {
+    const s = game.world && game.world.spawnPoints;
+    if (s && s[name]) return s[name];
+    return SPOTS[name] || { x: 0, z: 0 };
+  }
+  function drops() {
+    const s = game.world && game.world.spawnPoints;
+    if (s) {
+      if (Array.isArray(s.beachDrops) && s.beachDrops.length) return s.beachDrops;
+      if (Array.isArray(s.drops) && s.drops.length) return s.drops;
+      const ds = [s.beachDrop1, s.beachDrop2, s.beachDrop3, s.drop1, s.drop2, s.drop3].filter(Boolean);
+      if (ds.length) return ds;
     }
-    const t = missions.current.target;
-    moveMarkerTo(t.x, t.z);
-    if (game.message) game.message('New job: ' + def.name);
+    return DROP_SPOTS;
   }
-
-  function failJob(reason) {
-    const cur = missions.current;
-    if (!cur) return;
-    if (game.message) game.message('Job failed — ' + reason + '. Head back to the marker and try again.');
-    if (game.events) game.events.emit('missionFailed', { index: cur.index, reason });
-    // The job stays current with a fresh timer; the marker goes back to
-    // the job's start point so the player walks back to retry.
-    cur.stage = 0;
-    cur.timeLeft = defs[cur.index].timeLimit;
-    cur.target = stageTarget(cur.index, 0);
-    moveMarkerTo(cur.target.x, cur.target.z);
+  function pt(p) { return { x: (p && p.x) || 0, y: 0, z: (p && p.z) || 0 }; }
+  function near(p, r) {
+    const dx = (game.player ? game.player.position.x : 0) - p.x;
+    const dz = (game.player ? game.player.position.z : 0) - p.z;
+    return dx * dx + dz * dz <= r * r;
   }
-
-  function completeJob() {
-    const cur = missions.current;
-    if (!cur) return;
-    const def = defs[cur.index];
-    game.cash = (game.cash || 0) + def.cash;
-    if (game.player && game.player.addAmmo) game.player.addAmmo(def.ammo);
-    else game.ammo = (game.ammo || 0) + def.ammo;
-    if (game.audio && game.audio.missionDone) game.audio.missionDone();
-    if (game.message) game.message('Job complete: ' + def.name + '  +$' + def.cash);
-    if (game.events) game.events.emit('missionComplete', { index: cur.index, cash: def.cash });
-    if (cur.index === 5) {
-      // The Sunport Heist pays the debt: the story is over.
-      missions.current = null;
-      marker.visible = false;
+  function wanted() {
+    if (game.police && typeof game.police.wanted === 'number') return game.police.wanted;
+    return typeof game.wanted === 'number' ? game.wanted : 0;
+  }
+  function setWanted(n) {
+    const w = wanted();
+    if (n > w && game.police && game.police.addHeat) game.police.addHeat(n - w);
+    else if (n === 0 && w > 0 && game.police && game.police.clearHeat) game.police.clearHeat();
+  }
+  function drivingGold() {
+    if (!goldCar) return false;
+    const c = (game.player && game.player.car) || (game.vehicles && game.vehicles.playerCar);
+    return c === goldCar;
+  }
+  function spawnCoupe() {
+    if (goldCar || !game.vehicles || !game.vehicles.spawn) return;
+    const p = sp('goldCoupe');
+    try { goldCar = game.vehicles.spawn('coupe', p.x, p.z, p.heading || Math.PI / 2, 0xffd700); }
+    catch (e) { goldCar = null; }
+    if (!goldCar && Array.isArray(game.vehicles.list)) {
+      let best = null, bd = 400;
+      for (const c of game.vehicles.list) {
+        if (c.kind !== 'coupe' || !c.position) continue;
+        const dx = c.position.x - p.x, dz = c.position.z - p.z, dd = dx * dx + dz * dz;
+        if (dd < bd) { bd = dd; best = c; }
+      }
+      if (best) goldCar = best;
+    }
+  }
+  function hideCrate() { if (crate && crate.mesh) crate.mesh.visible = false; crate = null; }
+  function spawnCrate() {
+    hideCrate();
+    if (!game.combat || !game.combat.spawnPickup) return;
+    const p = sp('cashCrate');
+    const tries = [
+      () => game.combat.spawnPickup('cash', p.x, p.z),
+      () => game.combat.spawnPickup(p.x, p.z, 'cash'),
+      () => game.combat.spawnPickup('cash', p)
+    ];
+    for (const t of tries) { try { crate = t(); if (crate) return; } catch (e) {} }
+    crate = null;
+  }
+  function crateTaken() {
+    if (!crate) return false;
+    if (crate.taken || crate.collected || crate.pickedUp) return true;
+    if (crate.mesh && crate.mesh.visible === false) return true;
+    return crate.visible === false;
+  }
+  function targetPos() {
+    if (!current) return pt(sp('hideout'));
+    if (idx === 0) return pt(sp('marina'));
+    if (idx === 1) return stage === 0
+      ? (goldCar && goldCar.position ? pt(goldCar.position) : pt(sp('goldCoupe')))
+      : pt(sp('docks'));
+    if (idx === 2) { const ds = drops(); return pt(ds[Math.min(dropsGot, ds.length - 1)]); }
+    if (idx === 3) return pt(sp('hideout'));
+    if (idx === 4) return carrying ? pt(sp('hideout')) : pt(sp('cashCrate'));
+    return lootTaken ? pt(sp('hideout')) : pt(sp('vault'));
+  }
+  function objective() {
+    if (!current) return '';
+    if (idx === 0) return 'Deliver the package to Marina Hills';
+    if (idx === 1) return stage === 0 ? 'Take the gold coupe' : 'Deliver the coupe to the Old Docks';
+    if (idx === 2) return 'Collect the beach drops (' + dropsGot + '/3)';
+    if (idx === 3) return 'Lose the heat, then return to the Hideout';
+    if (idx === 4) return carrying ? 'Bring the crate home — stay under 3 stars' : 'Grab the cash crate in the container yard';
+    return lootTaken ? 'Get the loot back to the Hideout' : 'Hit the downtown vault';
+  }
+  function sync() {
+    if (!current) return;
+    current.timeLeft = Math.max(0, timeLeft);
+    current.time = current.timeLeft;
+    current.remaining = current.timeLeft;
+    current.stage = stage;
+    current.objective = objective();
+    current.target = targetPos();
+    current.waitingRetry = waitingRetry;
+    targetPos.x = current.target.x; targetPos.y = 0; targetPos.z = current.target.z;
+  }
+  function resetStage() {
+    stage = 0; dropsGot = 0; carrying = false; lootTaken = false;
+    if (idx === 3) setWanted(2);
+    if (idx === 4) spawnCrate();
+  }
+  function retry(msg) {
+    timeLeft = defs[idx].time;
+    waitingRetry = true;
+    retryCooldown = 0;
+    resetStage();
+    say(msg);
+    emit('missionFailed', { index: idx, name: defs[idx].name });
+    sync();
+  }
+  function start(i) {
+    if (typeof i === 'number') idx = i;
+    else if (current) {
+      timeLeft = defs[idx].time; waitingRetry = false; retryCooldown = 0;
+      resetStage();
+      say('Retrying: ' + defs[idx].name);
+      sync();
+      return;
+    } else idx = idx < 0 ? 0 : idx + 1;
+    if (idx < 0 || idx >= defs.length) { current = null; return; }
+    const d = defs[idx];
+    timeLeft = d.time; waitingRetry = false; retryCooldown = 0;
+    resetStage();
+    current = { index: idx, name: d.name, title: d.name, timeLimit: d.time, timeLeft: d.time, time: d.time, remaining: d.time, cash: d.cash, reward: d.cash, ammo: d.ammo, bullets: d.ammo, stage: 0, objective: '', target: null, active: true, done: false, waitingRetry: false };
+    if (idx === 1) spawnCoupe();
+    say('New job: ' + d.name + ' — ' + objective());
+    sync();
+  }
+  function complete() {
+    const d = defs[idx];
+    game.cash = (game.cash || 0) + d.cash;
+    game.ammo = (game.ammo || 0) + d.ammo;
+    say('Job done: ' + d.name + ' +$' + d.cash + ' +' + d.ammo + ' bullets');
+    emit('missionComplete', { index: idx, name: d.name, cash: d.cash, ammo: d.ammo });
+    const last = idx >= defs.length - 1;
+    if (current) { current.done = true; current.active = false; }
+    current = null;
+    if (last) {
+      say('The debt is paid. You walk free.');
       if (game.setState) game.setState('complete');
       return;
     }
-    start(cur.index + 1);
+    start();
   }
-
-  function objectiveText() {
-    const cur = missions.current;
-    if (!cur) return 'No active job.';
-    switch (cur.index) {
-      case 0: return 'Deliver the package to Marina Hills.';
-      case 1:
-        if (cur.stage === 0) return 'Find the gold coupe in the North Suburbs.';
-        if (cur.stage === 1) return 'Get in the gold coupe.';
-        return 'Drive the gold coupe to the Old Docks.';
-      case 2: return 'Collect the beach drops along Palma Beach (' + (cur.stage + 1) + '/3).';
-      case 3:
-        if ((game.wanted || 0) > 0) return 'Lose the heat, then return to the Hideout.';
-        return 'Heat is clear — get back to the Hideout.';
-      case 4:
-        if (cur.stage === 0) return 'Grab the cash crate in the container yard.';
-        return 'Bring the crate home — stay under four stars.';
-      case 5:
-        if (cur.stage === 0) return 'Reach the downtown vault.';
-        return 'Vault cash secured — drive home and finish the heist.';
-      default: return cur.name;
-    }
-  }
-
-  function playerInCar() {
-    return !!(game.player && game.player.car);
-  }
-
   function update(dt) {
-    // Pulse the marker so it reads from across the city.
-    if (marker.visible) {
-      const t = game.time || 0;
-      const pulse = 1 + Math.sin(t * 4) * 0.12;
-      ring.scale.set(pulse, pulse, 1);
-      pillar.rotation.y = t * 0.6;
-      beacon.material.opacity = 0.4 + Math.sin(t * 4) * 0.15;
+    if (!current) { if (marker) marker.visible = false; return; }
+    if (marker) {
+      const t = targetPos();
+      marker.visible = game.state === 'playing';
+      marker.position.set(t.x, 5.5 + Math.sin((game.time || 0) * 2) * 0.6, t.z);
+      marker.rotation.y = (game.time || 0) * 1.5;
     }
-    const cur = missions.current;
-    if (!cur) return;
-    const p = game.player && game.player.position;
-    if (!p) return;
-
-    cur.timeLeft -= dt;
-    if (cur.timeLeft <= 0) {
-      failJob('out of time');
-      return;
-    }
-
-    // Job 5 fails the moment the heat hits four stars.
-    if (cur.index === 4 && (game.wanted || 0) >= 4) {
-      failJob('the heat hit four stars');
-      return;
-    }
-
-    const t = cur.target;
-    const dist = Math.hypot(p.x - t.x, p.z - t.z);
-
-    // Job 2, stage 1 is "enter the coupe": reaching it is not enough.
-    if (cur.index === 1 && cur.stage === 1) {
-      if (playerInCar() && dist < 6) {
-        advance();
+    if (game.state !== 'playing') return;
+    const now = game.time || 0;
+    let step = typeof dt === 'number' && dt > 0 ? dt : 0;
+    if (!step && lastT) step = Math.max(0, Math.min(0.5, now - lastT));
+    lastT = now;
+    if (retryCooldown > 0) retryCooldown -= step;
+    if (waitingRetry) {
+      if (near(targetPos(), 6)) {
+        waitingRetry = false; retryCooldown = 2; resetStage();
+        say('Try again — ' + defs[idx].name + ' (' + Math.round(defs[idx].time) + 's)');
       }
-      return;
+      sync(); return;
     }
-
-    // Job 4 completes only when the heat is gone AND the player is home.
-    if (cur.index === 3) {
-      if ((game.wanted || 0) === 0 && dist < REACH_DIST) {
-        completeJob();
+    timeLeft -= step;
+    if (timeLeft <= 0) { retry("Time's up! Get back to the marker to try again."); return; }
+    if (retryCooldown > 0) { sync(); return; }
+    if (idx === 0) { if (near(sp('marina'), 6)) complete(); }
+    else if (idx === 1) {
+      if (stage === 0 && drivingGold()) { stage = 1; say('Coupe taken — deliver it to the Old Docks'); }
+      else if (stage === 1 && drivingGold() && near(sp('docks'), 6)) complete();
+    } else if (idx === 2) {
+      const ds = drops();
+      if (dropsGot < ds.length && near(ds[dropsGot], 5)) {
+        dropsGot++;
+        say(dropsGot >= ds.length ? 'All drops collected' : 'Drop ' + dropsGot + ' of ' + ds.length + ' collected');
+        if (dropsGot >= ds.length) complete();
       }
-      return;
-    }
-
-    if (dist < REACH_DIST) {
-      // Job 6: arriving at the vault turns the heat up to four stars.
-      if (cur.index === 5 && cur.stage === 0 && game.police && game.police.addHeat) {
-        while ((game.wanted || 0) < 4) game.police.addHeat(1);
+    } else if (idx === 3) { if (wanted() === 0 && near(sp('hideout'), 6)) complete(); }
+    else if (idx === 4) {
+      if (!carrying && (crateTaken() || near(sp('cashCrate'), 4))) {
+        carrying = true; hideCrate();
+        say('Crate grabbed — bring it home under 3 stars');
+      } else if (carrying) {
+        if (wanted() >= 3) retry('Too much heat! Lose the cops and grab the crate again.');
+        else if (near(sp('hideout'), 6)) complete();
       }
-      advance();
+    } else if (idx === 5) {
+      if (!lootTaken && near(sp('vault'), 6)) {
+        lootTaken = true; setWanted(4);
+        say('Vault loot grabbed — 4 stars! Get back to the Hideout');
+      } else if (lootTaken && near(sp('hideout'), 6)) complete();
     }
+    sync();
   }
 
-  function advance() {
-    const cur = missions.current;
-    if (!cur) return;
-    cur.stage += 1;
-    if (cur.stage >= stageCount(cur.index)) {
-      completeJob();
-      return;
-    }
-    cur.target = stageTarget(cur.index, cur.stage);
-    moveMarkerTo(cur.target.x, cur.target.z);
-    if (game.message) game.message(objectiveText());
-  }
-
-  return missions;
+  return {
+    get current() { return current; },
+    start: start,
+    update: update,
+    markerPos: targetPos
+  };
 }

@@ -1,18 +1,1 @@
-[
-    {
-        "name": "1-cover.jpg",
-        "query": "?shot=chase&seed=1"
-    },
-    {
-        "name": "2-drive.jpg",
-        "query": "?shot=drive&seed=1"
-    },
-    {
-        "name": "3-mission.jpg",
-        "query": "?shot=mission&seed=1"
-    },
-    {
-        "name": "4-start.jpg",
-        "query": "?shot=start&seed=1"
-    }
-]
+{"scenes":[{"description":"Three stars, cruisers on the player's tail, getaway job running.","name":"cover","shot":"chase"},{"description":"Cruising downtown in a stolen car.","name":"drive","shot":"drive"},{"description":"The Dock Heist cash grab.","name":"mission","shot":"mission"},{"description":"The title screen over the city.","name":"start","shot":"start"}]}
